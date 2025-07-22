@@ -1,0 +1,1 @@
+Get-ChildItem -Path "$PSScriptRoot" -Include "__pycache__" -Directory -Recurse | Remove-Item -Recurse -Force
