@@ -3,7 +3,6 @@ services:
     build: .
     volumes:
       - .:/app
-      - ./scripts:/scripts
     stop_signal: SIGTERM
     stop_grace_period: 30s
     ports:

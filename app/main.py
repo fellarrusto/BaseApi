@@ -12,7 +12,7 @@ async def lifespan(app: FastAPI):
     yield
     # Cleanup al shutdown
     import subprocess
-    subprocess.run(["/scripts/cleanup.sh"], check=False)
+    subprocess.run(["./scripts/cleanup.sh"], check=False)
     await close_mongo_connection()
     await close_qdrant_connection()
 
