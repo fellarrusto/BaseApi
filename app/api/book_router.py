@@ -1,10 +1,12 @@
 # app/api/book_router.py
+from app.models.chunk import ChunkResponse
+from app.services.pdf_service import pdf_service
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, status
 from typing import Optional, List
 from app.core.decorator import handle_errors, audit_log
 from app.models.book import (
     BookCreate, BookFromPDFCreate, BookUpdate, BookResponse, 
-    BookWithContentResponse, SearchResponse
+    BookWithContentResponse, BooksResponse
 )
 from app.services.book_service import book_service
 
@@ -91,48 +93,16 @@ async def delete_book(book_id: str):
             detail="Book not found"
         )
 
-@router.get("/", response_model=SearchResponse, status_code=status.HTTP_200_OK)
+@router.get("/", response_model=BooksResponse, status_code=status.HTTP_200_OK)
 @handle_errors
 @audit_log(method="GET", metadata={"service": "books"})
 async def list_books(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Items per page")
-) -> SearchResponse:
+) -> BooksResponse:
     """Lista tutti i libri"""
     return await book_service.list_books(page=page, limit=limit)
 
-@router.get("/search/", response_model=SearchResponse, status_code=status.HTTP_200_OK)
-@handle_errors
-@audit_log(method="GET", metadata={"service": "books"})
-async def search_books(
-    q: str = Query(..., description="Search keyword"),
-    page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(10, ge=1, le=100, description="Items per page")
-) -> SearchResponse:
-    """Ricerca libri per keyword"""
-    return await book_service.search_books(keyword=q, page=page, limit=limit)
-
-@router.post("/bulk-upload-pdf", response_model=List[BookResponse], status_code=status.HTTP_201_CREATED)
-@handle_errors
-@audit_log(method="POST", metadata={"service": "books", "action": "bulk_upload_pdf"})
-async def bulk_create_books_from_pdf(
-    files: List[UploadFile] = File(..., description="Multiple PDF files to upload"),
-    tags: Optional[str] = Form(None, description="Comma-separated tags for all books")
-) -> List[BookResponse]:
-    """Crea più libri caricando multipli file PDF"""
-    
-    # Valida che tutti i file siano PDF
-    for file in files:
-        if not file.filename.lower().endswith('.pdf'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File {file.filename} must be a PDF"
-            )
-    
-    # Converte tags da stringa a lista
-    tags_list = [tag.strip() for tag in tags.split(",")] if tags else []
-    
-    return await book_service.bulk_create_books_from_pdf(files, tags_list)
 
 @router.post("/bulk-upload-pdf", response_model=List[BookResponse], status_code=status.HTTP_201_CREATED)
 @handle_errors

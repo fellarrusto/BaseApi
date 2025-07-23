@@ -62,7 +62,7 @@ class BookResponse(BaseModel):
 class BookWithContentResponse(BookResponse):
     raw_text: Optional[str] = None
 
-class SearchResponse(BaseModel):
+class BooksResponse(BaseModel):
     books: List[BookResponse]
     total: int
     page: int

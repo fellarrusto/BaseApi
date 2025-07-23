@@ -1,4 +1,3 @@
-# app/services/book_service.py
 from typing import Optional, List
 from bson import ObjectId
 from datetime import datetime
@@ -7,7 +6,7 @@ from app.db.database import get_database
 from fastapi import UploadFile
 from app.models.book import (
     BookInDB, BookContentInDB, BookCreate, BookFromPDFCreate, BookUpdate, 
-    BookResponse, BookWithContentResponse, SearchResponse
+    BookResponse, BookWithContentResponse, BooksResponse
 )
 from app.services.pdf_service import pdf_service
 
@@ -33,7 +32,6 @@ class BookService:
         """Crea un nuovo libro con eventuale contenuto"""
         db = get_database()
         
-        # Crea il libro
         book = BookInDB(
             title=book_data.title,
             author=book_data.author,
@@ -45,7 +43,6 @@ class BookService:
         result = await db[self.books_collection].insert_one(book.dict(by_alias=True))
         book_id = result.inserted_id
         
-        # Se c'è contenuto raw, lo salva
         if book_data.raw_text:
             content = BookContentInDB(
                 book_id=book_id,
@@ -55,18 +52,21 @@ class BookService:
             await db[self.content_collection].insert_one(content.dict(by_alias=True))
         
         created_book = await db[self.books_collection].find_one({"_id": book_id})
+        return self._book_to_response(created_book)
+    
     async def create_book_from_pdf(self, file: UploadFile, book_data: BookFromPDFCreate) -> BookResponse:
         """Crea un libro da un file PDF"""
         db = get_database()
         
         try:
-            # Estrae testo dal PDF
+            # Estrae testo e metadati dal PDF
             raw_text = await pdf_service.extract_text_from_pdf(file)
-            
-            # Estrae metadati dal PDF (file pointer viene resettato nel service)
             pdf_metadata = await pdf_service.extract_metadata_from_pdf(file)
             
-            # Usa i metadati del PDF se non forniti
+            # Genera chunks usando il testo già estratto
+            chunks = pdf_service.chunk_text_by_pages(raw_text, pdf_metadata, file.filename, 1000, 200)
+            
+            # Usa metadati del PDF se non forniti
             title = book_data.title or pdf_metadata.get("pdf_title") or file.filename or "Untitled"
             author = book_data.author or pdf_metadata.get("pdf_author")
             
@@ -82,10 +82,11 @@ class BookService:
             result = await db[self.books_collection].insert_one(book.dict(by_alias=True))
             book_id = result.inserted_id
             
-            # Salva il contenuto raw con metadati PDF
+            # Salva il contenuto raw
             content_metadata = {
                 "source": "pdf",
                 "filename": file.filename,
+                "total_chunks": len(chunks),
                 **pdf_metadata
             }
             
@@ -175,41 +176,7 @@ class BookService:
         
         return result.matched_count > 0
     
-    async def search_books(self, keyword: str, page: int = 1, limit: int = 10) -> SearchResponse:
-        """Ricerca libri per keyword"""
-        db = get_database()
-        
-        # Regex case-insensitive per ricerca in title, author, description
-        regex_pattern = re.compile(keyword, re.IGNORECASE)
-        
-        query = {
-            "is_deleted": False,
-            "$or": [
-                {"title": {"$regex": regex_pattern}},
-                {"author": {"$regex": regex_pattern}},
-                {"description": {"$regex": regex_pattern}},
-                {"tags": {"$in": [regex_pattern]}}
-            ]
-        }
-        
-        # Count totale
-        total = await db[self.books_collection].count_documents(query)
-        
-        # Documenti paginati
-        skip = (page - 1) * limit
-        cursor = db[self.books_collection].find(query).skip(skip).limit(limit)
-        books = await cursor.to_list(length=limit)
-        
-        book_responses = [self._book_to_response(book) for book in books]
-        
-        return SearchResponse(
-            books=book_responses,
-            total=total,
-            page=page,
-            limit=limit
-        )
-    
-    async def list_books(self, page: int = 1, limit: int = 10) -> SearchResponse:
+    async def list_books(self, page: int = 1, limit: int = 10) -> BooksResponse:
         """Lista tutti i libri"""
         db = get_database()
         
@@ -223,7 +190,7 @@ class BookService:
         
         book_responses = [self._book_to_response(book) for book in books]
         
-        return SearchResponse(
+        return BooksResponse(
             books=book_responses,
             total=total,
             page=page,
@@ -237,17 +204,12 @@ class BookService:
         
         for file in files:
             try:
-                # Estrae testo dal PDF
                 raw_text = await pdf_service.extract_text_from_pdf(file)
-                
-                # Estrae metadati dal PDF
                 pdf_metadata = await pdf_service.extract_metadata_from_pdf(file)
                 
-                # Usa metadati del PDF o filename come fallback
                 title = pdf_metadata.get("pdf_title") or file.filename or "Untitled"
                 author = pdf_metadata.get("pdf_author")
                 
-                # Crea il libro
                 book = BookInDB(
                     title=title,
                     author=author,
@@ -257,7 +219,6 @@ class BookService:
                 result = await db[self.books_collection].insert_one(book.dict(by_alias=True))
                 book_id = result.inserted_id
                 
-                # Salva contenuto raw
                 content_metadata = {
                     "source": "pdf_bulk",
                     "filename": file.filename,
@@ -272,13 +233,10 @@ class BookService:
                 )
                 await db[self.content_collection].insert_one(content.dict(by_alias=True))
                 
-                # Recupera libro creato
                 created_book = await db[self.books_collection].find_one({"_id": book_id})
                 created_books.append(self._book_to_response(created_book))
                 
             except Exception as e:
-                # In caso di errore su un file, continua con gli altri
-                # Potresti decidere di fare un rollback completo o continuare
                 print(f"Error processing {file.filename}: {str(e)}")
                 continue
         
