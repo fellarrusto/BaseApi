@@ -111,3 +111,47 @@ async def search_books(
 ) -> SearchResponse:
     """Ricerca libri per keyword"""
     return await book_service.search_books(keyword=q, page=page, limit=limit)
+
+@router.post("/bulk-upload-pdf", response_model=List[BookResponse], status_code=status.HTTP_201_CREATED)
+@handle_errors
+@audit_log(method="POST", metadata={"service": "books", "action": "bulk_upload_pdf"})
+async def bulk_create_books_from_pdf(
+    files: List[UploadFile] = File(..., description="Multiple PDF files to upload"),
+    tags: Optional[str] = Form(None, description="Comma-separated tags for all books")
+) -> List[BookResponse]:
+    """Crea più libri caricando multipli file PDF"""
+    
+    # Valida che tutti i file siano PDF
+    for file in files:
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File {file.filename} must be a PDF"
+            )
+    
+    # Converte tags da stringa a lista
+    tags_list = [tag.strip() for tag in tags.split(",")] if tags else []
+    
+    return await book_service.bulk_create_books_from_pdf(files, tags_list)
+
+@router.post("/bulk-upload-pdf", response_model=List[BookResponse], status_code=status.HTTP_201_CREATED)
+@handle_errors
+@audit_log(method="POST", metadata={"service": "books", "action": "bulk_upload_pdf"})
+async def bulk_create_books_from_pdf(
+    files: List[UploadFile] = File(..., description="Multiple PDF files to upload"),
+    tags: Optional[str] = Form(None, description="Comma-separated tags for all books")
+) -> List[BookResponse]:
+    """Crea più libri caricando multipli file PDF"""
+    
+    # Valida che tutti i file siano PDF
+    for file in files:
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File {file.filename} must be a PDF"
+            )
+    
+    # Converte tags da stringa a lista
+    tags_list = [tag.strip() for tag in tags.split(",")] if tags else []
+    
+    return await book_service.bulk_create_books_from_pdf(files, tags_list)

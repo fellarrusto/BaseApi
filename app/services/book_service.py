@@ -229,5 +229,59 @@ class BookService:
             page=page,
             limit=limit
         )
+    
+    async def bulk_create_books_from_pdf(self, files: List[UploadFile], tags: List[str] = None) -> List[BookResponse]:
+        """Crea multipli libri da file PDF in batch"""
+        db = get_database()
+        created_books = []
+        
+        for file in files:
+            try:
+                # Estrae testo dal PDF
+                raw_text = await pdf_service.extract_text_from_pdf(file)
+                
+                # Estrae metadati dal PDF
+                pdf_metadata = await pdf_service.extract_metadata_from_pdf(file)
+                
+                # Usa metadati del PDF o filename come fallback
+                title = pdf_metadata.get("pdf_title") or file.filename or "Untitled"
+                author = pdf_metadata.get("pdf_author")
+                
+                # Crea il libro
+                book = BookInDB(
+                    title=title,
+                    author=author,
+                    tags=tags or []
+                )
+                
+                result = await db[self.books_collection].insert_one(book.dict(by_alias=True))
+                book_id = result.inserted_id
+                
+                # Salva contenuto raw
+                content_metadata = {
+                    "source": "pdf_bulk",
+                    "filename": file.filename,
+                    **pdf_metadata
+                }
+                
+                content = BookContentInDB(
+                    book_id=book_id,
+                    content_type="raw",
+                    raw_text=raw_text,
+                    metadata=content_metadata
+                )
+                await db[self.content_collection].insert_one(content.dict(by_alias=True))
+                
+                # Recupera libro creato
+                created_book = await db[self.books_collection].find_one({"_id": book_id})
+                created_books.append(self._book_to_response(created_book))
+                
+            except Exception as e:
+                # In caso di errore su un file, continua con gli altri
+                # Potresti decidere di fare un rollback completo o continuare
+                print(f"Error processing {file.filename}: {str(e)}")
+                continue
+        
+        return created_books
 
 book_service = BookService()
