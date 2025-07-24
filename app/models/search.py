@@ -1,6 +1,6 @@
 # app/models/search.py
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 from app.models.document import DocumentResponse
 from app.models.chunk import ChunkSearchResult
 

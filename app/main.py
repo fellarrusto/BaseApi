@@ -21,6 +21,6 @@ app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 router = APIRouter(prefix="/api/v1")
 router.include_router(health_router.router)
 router.include_router(document_router.router)
-# router.include_router(search_router.router)
+router.include_router(search_router.router)
 
 app.include_router(router)
