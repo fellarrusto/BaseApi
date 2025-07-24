@@ -1,3 +1,4 @@
+# app/models/base.py
 from bson import ObjectId
 
 class PyObjectId(ObjectId):
@@ -11,6 +12,3 @@ class PyObjectId(ObjectId):
         if not ObjectId.is_valid(v):
             raise ValueError("Invalid ObjectId")
         return ObjectId(v)
-
-    def __str__(self):
-        return str(self)

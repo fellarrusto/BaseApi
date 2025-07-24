@@ -1,23 +1,24 @@
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Dict, Any, Optional
+# app/models/chunk.py
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional, List
 
-class DocumentChunk(BaseModel):
-    """Modello per un chunk di documento"""
-    page_number: int
-    chunk_text: str
-    chunk_index: int  # indice del chunk nella pagina
-    metadata: Dict[str, Any]
+class Chunk(BaseModel):
+    """Modello interno per processamento chunk"""
+    text: str
+    index: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
-class ChunkResponse(BaseModel):
-    """Modello di response per i chunk"""
-    chunk_index: int
-    page_number: int
-    chunk_text: str
-    chunk_length: int
-    metadata: Optional[Dict[str, Any]] = None
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+class ChunkWithEmbedding(Chunk):
+    """Chunk con embedding per inserimento in Qdrant"""
+    embedding: List[float]
+    document_id: str
+    is_deleted: bool = False
+
+class ChunkSearchResult(BaseModel):
+    """Risultato di ricerca da Qdrant"""
+    chunk_id: str
+    document_id: str
+    text: str
+    index: int
+    score: float
+    metadata: Dict[str, Any] = Field(default_factory=dict)
