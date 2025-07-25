@@ -1,21 +1,11 @@
-import re
 from typing import List, Dict, Any
 from app.models.chunk import Chunk
+from app.utils.text_utils import clean_text
 
 # Configurazione chunking - definita a livello di sistema
 CHUNK_WORDS = 100
 CHUNK_MERGE = 5
 CHUNK_OVERLAP = 2
-
-def clean_text(text: str) -> str:
-    # Rimuove i caratteri di nuova linea e li sostituisce con uno spazio singolo
-    cleaned_text = text.replace('\n', ' ').replace('\r', ' ')
-    # Rimuove i caratteri speciali (mantenendo lettere, numeri, spazi e punteggiatura specificata)
-    cleaned_text = re.sub(r'[^\w\s.,!?;]', '', cleaned_text)
-    # Rimuove multipli spazi bianchi consecutivi
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
-    cleaned_text = cleaned_text.lower()
-    return cleaned_text
 
 def get_chunks(min_gap: int, text: str) -> List[str]:
   text_clean = clean_text(text)
@@ -38,7 +28,6 @@ def get_chunks_overlap(chunks: List[str], chunk_len: int, overlap: int) -> List[
   e_idx = s_idx + chunk_len
   chunks_merge = []
   while e_idx<len(chunks):
-    print(s_idx, e_idx-1)
     chunks_merge.append(" ".join(chunks[s_idx:e_idx-1]))
     s_idx = e_idx - overlap
     e_idx = s_idx + chunk_len

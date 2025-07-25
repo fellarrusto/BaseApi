@@ -3,16 +3,7 @@ import PyPDF2
 import io
 from typing import Dict, Any
 from fastapi import UploadFile
-
-def clean_text(text: str) -> str:
-    # Rimuove i caratteri di nuova linea e li sostituisce con uno spazio singolo
-    cleaned_text = text.replace('\n', ' ').replace('\r', ' ')
-    # Rimuove i caratteri speciali (mantenendo lettere, numeri, spazi e punteggiatura specificata)
-    cleaned_text = re.sub(r'[^\w\s.,!?;]', '', cleaned_text)
-    # Rimuove multipli spazi bianchi consecutivi
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
-    cleaned_text = cleaned_text.lower()
-    return cleaned_text
+from app.utils.text_utils import clean_text
 
 async def extract_text(file: UploadFile) -> str:
     """Estrae il testo da un file PDF"""

@@ -1,5 +1,6 @@
 services:
   app:
+    container_name: sybilla-search
     build: .
     volumes:
       - .:/app
@@ -15,11 +16,13 @@ services:
       - PYTHONUNBUFFERED=1
 
   mongo:
+    container_name: sybilla-search-mongo
     image: mongo:6
     volumes:
       - mongo-data:/data/db
 
   mongo-express:
+    container_name: sybilla-search-mongo-express
     image: mongo-express:1.0.0-alpha.4
     ports:
       - "8086:8081"
@@ -32,6 +35,7 @@ services:
     restart: unless-stopped
 
   qdrant:
+    container_name: sybilla-search-qdrant
     image: qdrant/qdrant:latest
     ports:
       - "6335:6333"  # REST API

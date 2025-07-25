@@ -176,88 +176,85 @@ class DocumentService:
     # ===================== PRIVATE METHODS =====================
     
     async def _process_document_creation(
-            self, 
-            text: str, 
-            metadata: Dict[str, Any], 
-            document_data: DocumentCreate, 
-            source_type: str,
-            source_filename: Optional[str]
-        ) -> DocumentResponse:
-            """Processo comune di creazione documento"""
-            try:
-                print(f"[PROCESS] Starting document creation - Title: {document_data.title}, Source: {source_type}")
-                db = get_database()
+        self, 
+        text: str, 
+        metadata: Dict[str, Any], 
+        document_data: DocumentCreate, 
+        source_type: str,
+        source_filename: Optional[str]
+    ) -> DocumentResponse:
+        """Processo comune di creazione documento"""
+        try:
+            print(f"[PROCESS] Starting document creation - Title: {document_data.title}, Source: {source_type}")
+            db = get_database()
+            
+            doc = DocumentInDB(
+                title=document_data.title,
+                author=document_data.author,
+                description=document_data.description,
+                tags=document_data.tags or [],
+                source_type=source_type,
+                source_filename=source_filename
+            )
+            
+            result = await db[self.documents_collection].insert_one(doc.dict(by_alias=True))
+            document_id = str(result.inserted_id)
+            print(f"[MONGODB] Document created with ID: {document_id}")
+            
+            content = DocumentContentInDB(
+                document_id=result.inserted_id,
+                raw_text=text,
+                metadata=metadata or {}
+            )
+            await db[self.content_collection].insert_one(content.dict(by_alias=True))
+            print(f"[MONGODB] Content saved - Text length: {len(text)} chars")
+            
+            chunks = chunking_utils.create_chunks(text, metadata or {})
+            print(f"[CHUNKING] Created {len(chunks)} chunks")
+            
+            if chunks:
+                print(f"[EMBEDDING] Generating embeddings for {len(chunks)} chunks...")
+                texts = [chunk.text for chunk in chunks]
+                embeddings = []
+                for i, t in enumerate(texts):
+                    emb = embedding_utils.generate_embeddings([t])[0]
+                    embeddings.append(emb)
+                    print(f"[EMBEDDING] {i+1}/{len(texts)} generated")
                 
-                # Crea documento in MongoDB
-                doc = DocumentInDB(
-                    title=document_data.title,
-                    author=document_data.author,
-                    description=document_data.description,
-                    tags=document_data.tags or [],
-                    source_type=source_type,
-                    source_filename=source_filename
-                )
+                chunks_with_embeddings = [
+                    ChunkWithEmbedding(
+                        text=chunk.text,
+                        index=chunk.index,
+                        metadata=chunk.metadata,
+                        embedding=embeddings[i],
+                        document_id=document_id
+                    )
+                    for i, chunk in enumerate(chunks)
+                ]
                 
-                result = await db[self.documents_collection].insert_one(doc.dict(by_alias=True))
-                document_id = str(result.inserted_id)
-                print(f"[MONGODB] Document created with ID: {document_id}")
-                
-                # Salva contenuto
-                content = DocumentContentInDB(
-                    document_id=result.inserted_id,
-                    raw_text=text,
-                    metadata=metadata or {}
-                )
-                await db[self.content_collection].insert_one(content.dict(by_alias=True))
-                print(f"[MONGODB] Content saved - Text length: {len(text)} chars")
-                
-                # Crea chunks
-                chunks = chunking_utils.create_chunks(text, metadata or {})
-                print(f"[CHUNKING] Created {len(chunks)} chunks")
-                
-                if chunks:  # Solo se ci sono chunks
-                    # Genera embeddings
-                    print(f"[EMBEDDING] Generating embeddings for {len(chunks)} chunks...")
-                    texts = [chunk.text for chunk in chunks]
-                    embeddings = embedding_utils.generate_embeddings(texts)
-                    print(f"[EMBEDDING] Generated {len(embeddings)} embeddings")
-                    
-                    # Prepara chunks con embeddings
-                    chunks_with_embeddings = [
-                        ChunkWithEmbedding(
-                            text=chunk.text,
-                            index=chunk.index,
-                            metadata=chunk.metadata,
-                            embedding=embeddings[i],
-                            document_id=document_id
-                        )
-                        for i, chunk in enumerate(chunks)
-                    ]
-                    
-                    # Inserisci in Qdrant
-                    print(f"[QDRANT] Inserting {len(chunks_with_embeddings)} chunks...")
-                    await vector_service.insert_chunks(chunks_with_embeddings, document_id)
-                    print(f"[QDRANT] Chunks inserted successfully")
-                
-                # Ritorna documento creato
-                created_doc = await db[self.documents_collection].find_one({"_id": result.inserted_id})
-                print(f"[COMPLETE] Document creation completed for: {created_doc['title']}")
-                
-                return DocumentResponse(
-                    id=document_id,
-                    title=created_doc["title"],
-                    author=created_doc.get("author"),
-                    description=created_doc.get("description"),
-                    tags=created_doc.get("tags", []),
-                    source_type=created_doc["source_type"],
-                    source_filename=created_doc.get("source_filename"),
-                    created_at=created_doc["created_at"],
-                    updated_at=created_doc["updated_at"]
-                )
-                
-            except Exception as e:
-                print(f"[ERROR] Document creation failed: {str(e)}")
-                raise Exception(f"Document creation failed: {str(e)}")
+                print(f"[QDRANT] Inserting {len(chunks_with_embeddings)} chunks...")
+                await vector_service.insert_chunks(chunks_with_embeddings, document_id)
+                print(f"[QDRANT] Chunks inserted successfully")
+            
+            created_doc = await db[self.documents_collection].find_one({"_id": result.inserted_id})
+            print(f"[COMPLETE] Document creation completed for: {created_doc['title']}")
+            
+            return DocumentResponse(
+                id=document_id,
+                title=created_doc["title"],
+                author=created_doc.get("author"),
+                description=created_doc.get("description"),
+                tags=created_doc.get("tags", []),
+                source_type=created_doc["source_type"],
+                source_filename=created_doc.get("source_filename"),
+                created_at=created_doc["created_at"],
+                updated_at=created_doc["updated_at"]
+            )
+            
+        except Exception as e:
+            print(f"[ERROR] Document creation failed: {str(e)}")
+            raise Exception(f"Document creation failed: {str(e)}")
+
     
     async def _delete_document_completely(self, document_id: str) -> bool:
         """Elimina completamente documento da MongoDB e Qdrant"""

@@ -3,10 +3,11 @@ from typing import List
 from sentence_transformers import SentenceTransformer
 
 # Modello di embedding - definito a livello di sistema
-MODEL_NAME = 'all-MiniLM-L6-v2'
+# MODEL_NAME = 'all-MiniLM-L6-v2'
+MODEL_NAME = 'paraphrase-multilingual-mpnet-base-v2'
 
 print("Loading model..")
-model = SentenceTransformer(MODEL_NAME)
+model = SentenceTransformer(MODEL_NAME, trust_remote_code=True)
 print(f"{MODEL_NAME} Loaded")
 
 def generate_embedding(text: str) -> List[float]:
