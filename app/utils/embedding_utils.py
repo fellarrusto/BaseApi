@@ -4,7 +4,10 @@ from sentence_transformers import SentenceTransformer
 
 # Modello di embedding - definito a livello di sistema
 MODEL_NAME = 'all-MiniLM-L6-v2'
+
+print("Loading model..")
 model = SentenceTransformer(MODEL_NAME)
+print(f"{MODEL_NAME} Loaded")
 
 def generate_embedding(text: str) -> List[float]:
     """Genera embedding per una singola stringa"""

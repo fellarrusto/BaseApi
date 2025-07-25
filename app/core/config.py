@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     DATABASE_NAME: str = "sybilla_db"
     QDRANT_HOST: str = "qdrant"
     QDRANT_PORT: int = 6333
+    
+    # Task configuration
+    PDF_INBOX_PATH: str = "./storage/pdf_inbox"
 
     class Config:
         env_file = ".env"

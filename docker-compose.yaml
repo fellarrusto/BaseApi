@@ -3,6 +3,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - ./storage:/app/storage
     stop_signal: SIGTERM
     stop_grace_period: 30s
     ports:

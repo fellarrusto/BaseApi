@@ -1,7 +1,6 @@
-# app/main.py
 from fastapi import FastAPI, APIRouter
 from contextlib import asynccontextmanager
-from app.api import document_router, health_router, search_router
+from app.api import document_router, health_router, search_router, task_router
 from app.core.config import settings
 from app.db.database import connect_to_mongo, close_mongo_connection, connect_to_qdrant, close_qdrant_connection
 
@@ -22,5 +21,6 @@ router = APIRouter(prefix="/api/v1")
 router.include_router(health_router.router)
 router.include_router(document_router.router)
 router.include_router(search_router.router)
+router.include_router(task_router.router)  # Nuovo router
 
 app.include_router(router)
