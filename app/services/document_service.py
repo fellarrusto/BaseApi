@@ -17,6 +17,7 @@ class DocumentService:
     def __init__(self):
         self.documents_collection = "documents"
         self.content_collection = "document_contents"
+        self.chunks_collection = "document_chunks"
     
     async def create_document_from_pdf(self, file: UploadFile, document_data: DocumentCreate) -> DocumentResponse:
         """Crea documento da PDF"""
@@ -209,30 +210,52 @@ class DocumentService:
             await db[self.content_collection].insert_one(content.dict(by_alias=True))
             print(f"[MONGODB] Content saved - Text length: {len(text)} chars")
             
+            # Crea chunks base
             chunks = chunking_utils.create_chunks(text, metadata or {})
             print(f"[CHUNKING] Created {len(chunks)} chunks")
             
-            if chunks:
-                print(f"[EMBEDDING] Generating embeddings for {len(chunks)} chunks...")
-                texts = [chunk.text for chunk in chunks]
+            # Salva chunks in MongoDB e ottieni gli ID
+            chunk_docs = []
+            for chunk in chunks:
+                chunk_dict = chunk.dict(by_alias=True)
+                chunk_dict["document_id"] = result.inserted_id
+                chunk_result = await db[self.chunks_collection].insert_one(chunk_dict)
+                chunk_docs.append({
+                    "chunk_id": str(chunk_result.inserted_id),
+                    "chunk": chunk
+                })
+            
+            print(f"[MONGODB] Saved {len(chunk_docs)} chunks to database")
+            
+            if chunk_docs:
+                print(f"[EMBEDDING] Generating embeddings for {len(chunk_docs)} chunks...")
+                texts = [item["chunk"].text for item in chunk_docs]
                 embeddings = []
                 for i, t in enumerate(texts):
                     emb = embedding_utils.generate_embeddings([t])[0]
                     embeddings.append(emb)
                     print(f"[EMBEDDING] {i+1}/{len(texts)} generated")
                 
-                chunks_with_embeddings = [
-                    ChunkWithEmbedding(
+                # Crea chunks con embedding includendo l'ID MongoDB
+                chunks_with_embeddings = []
+                for i, item in enumerate(chunk_docs):
+                    chunk = item["chunk"]
+                    chunk_id = item["chunk_id"]
+                    
+                    # Aggiungi chunk_id ai metadati
+                    enhanced_metadata = chunk.metadata.copy()
+                    enhanced_metadata["chunk_id"] = chunk_id
+                    
+                    chunk_with_embedding = ChunkWithEmbedding(
                         text=chunk.text,
                         index=chunk.index,
-                        metadata=chunk.metadata,
+                        metadata=enhanced_metadata,
                         embedding=embeddings[i],
                         document_id=document_id
                     )
-                    for i, chunk in enumerate(chunks)
-                ]
+                    chunks_with_embeddings.append(chunk_with_embedding)
                 
-                print(f"[QDRANT] Inserting {len(chunks_with_embeddings)} chunks...")
+                print(f"[QDRANT] Inserting {len(chunks_with_embeddings)} chunks with MongoDB IDs...")
                 await vector_service.insert_chunks(chunks_with_embeddings, document_id)
                 print(f"[QDRANT] Chunks inserted successfully")
             
@@ -263,6 +286,7 @@ class DocumentService:
         # Elimina da MongoDB
         result = await db[self.documents_collection].delete_one({"_id": ObjectId(document_id)})
         await db[self.content_collection].delete_one({"document_id": ObjectId(document_id)})
+        await db[self.chunks_collection].delete_many({"document_id": ObjectId(document_id)})
         
         # Elimina da Qdrant
         await vector_service.delete_document_chunks(document_id)

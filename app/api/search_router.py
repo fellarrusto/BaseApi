@@ -24,6 +24,7 @@ async def vector_search(request: SearchRequest) -> VectorSearchResponse:
 @handle_errors
 @audit_log(method="POST", metadata={"service": "search", "action": "hybrid"})
 async def hybrid_search(request: SearchRequest) -> HybridSearchResponse:
+    await search_service.hybrid_search(request)
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail="Hybrid search not implemented"

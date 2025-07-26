@@ -10,6 +10,9 @@ from app.models.search import (
 )
 from app.models.document import DocumentResponse
 
+import logging
+logger = logging.getLogger(__name__)
+
 class SearchService:
     def __init__(self):
         self.content_collection = "document_contents"
@@ -169,7 +172,33 @@ class SearchService:
         )
 
     async def hybrid_search(self, req: SearchRequest):
-        """Ricerca ibrida - non implementata"""
+        """Ricerca ibrida - ricerca keyword nella collection document_contents"""
+        db = get_database()
+        client = get_qdrant_client()
+        
+        # Query MongoDB con ricerca testuale in title e text
+        query = {
+            "$or": [
+                {"metadata.title": {"$regex": req.query, "$options": "i"}},
+                {"text": {"$regex": req.query, "$options": "i"}}
+            ]
+        }
+        
+        # Recupera risultati keyword
+        content_cursor = db[self.content_collection].find(query)
+        keyword_results = await content_cursor.to_list(None)
+        print(keyword_results[0])
+        
+        # Genera embedding e ricerca semantica
+        query_embedding = generate_embedding(req.query)
+        semantic_results = await client.search(
+            collection_name=self.qdrant_collection,
+            query_vector=query_embedding,
+            limit=50
+        )
+        print(semantic_results[0])
+
+
         raise NotImplementedError("Hybrid search not implemented")
 
 search_service = SearchService()
