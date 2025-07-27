@@ -156,7 +156,7 @@ class SearchService:
         
         total = len(all_chunks)
         # Applica il limite dalla richiesta
-        all_chunks = all_chunks[:req.limit]
+        all_chunks = all_chunks[:req.limit*2]
         
         return HybridSearchResponse(
             query=req.query,

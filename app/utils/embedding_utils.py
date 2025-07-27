@@ -8,11 +8,11 @@ MODEL_NAME = 'paraphrase-multilingual-mpnet-base-v2'
 MODEL_CACHE_DIR = './models'  # Directory locale per i modelli
 
 def check_model_exists(model_name: str, cache_dir: str) -> bool:
-    """Controlla se il modello esiste già localmente"""
     model_path = Path(cache_dir) / model_name
-    # Controlla se esistono i file essenziali del modello
-    required_files = ['config.json', 'pytorch_model.bin']
-    return model_path.exists() and all((model_path / file).exists() for file in required_files)
+    has_model_file = (model_path / 'pytorch_model.bin').exists() or (model_path / 'model.safetensors').exists()
+    required_files = ['config.json', 'modules.json']
+    return model_path.exists() and has_model_file and all((model_path / f).exists() for f in required_files)
+
 
 def load_model():
     """Carica il modello, scaricandolo solo se necessario"""

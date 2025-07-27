@@ -53,6 +53,6 @@ class KeywordService:
         norm_scores = [(s - min_score) / (max_score - min_score) if max_score > min_score else 0.0 for s in scores]
         for chunk, score in zip(chunks, norm_scores):
             chunk.score = float(score)
-        return chunks
+        return sorted(chunks, key=lambda c: c.score, reverse=True)
 
 keyword_service = KeywordService()

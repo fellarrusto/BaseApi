@@ -20,7 +20,7 @@ async def keyword_search(request: SearchRequest) -> KeywordSearchResponse:
 async def vector_search(request: SearchRequest) -> VectorSearchResponse:
     return await search_service.vector_search(request)
 
-@router.post("/hybrid", response_model=HybridSearchResponse, status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.post("/hybrid", response_model=HybridSearchResponse, status_code=status.HTTP_200_OK)
 @handle_errors
 @audit_log(method="POST", metadata={"service": "search", "action": "hybrid"})
 async def hybrid_search(request: SearchRequest) -> HybridSearchResponse:

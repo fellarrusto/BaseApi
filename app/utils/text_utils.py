@@ -20,7 +20,7 @@ def clean_text(text: str, max_word_length: int = 30, max_nonalpha_ratio: float =
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
     cleaned_text = cleaned_text.lower()
     
-    clean_text = clean_text.replace("scanned by cam scanner", "")
+    cleaned_text = cleaned_text.replace("scanned by cam scanner", "")
 
     # Rimuove parole troppo lunghe o con troppi caratteri non alfabetici
     def is_valid(word):
