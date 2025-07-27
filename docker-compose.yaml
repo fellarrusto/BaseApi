@@ -5,6 +5,7 @@ services:
     volumes:
       - .:/app
       - ./storage:/app/storage
+      - ./models:/app/models
     stop_signal: SIGTERM
     stop_grace_period: 30s
     ports:

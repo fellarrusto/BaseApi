@@ -1,6 +1,9 @@
 # app/services/keyword_service.py
+import re
+from rank_bm25 import BM25Okapi
 from typing import List, Optional, Dict, Any
 from app.db.database import get_database
+from app.models.search import HybridChunk
 
 class KeywordService:
     def __init__(self):
@@ -36,12 +39,20 @@ class KeywordService:
                          limit: Optional[int] = None) -> List[Dict]:
         """Ricerca testuale con regex su un campo specifico"""
         options = "" if case_sensitive else "i"
-        query = {field: {"$regex": text, "$options": options}}
+        keywords = text.split()
+        pattern = "(" + "|".join(map(re.escape, keywords)) + ")"
+        query = { field: {"$regex": pattern, "$options": options} }
+        return await self.query(query=query, collection_name=collection_name, limit=limit)
         
-        return await self.query(
-            query=query,
-            collection_name=collection_name,
-            limit=limit
-        )
+    def get_scores(self, query: str, chunks: List[HybridChunk]) -> List[HybridChunk]:
+        tokenized_corpus = [chunk.text.split(" ") for chunk in chunks]
+        bm25 = BM25Okapi(tokenized_corpus)
+        tokenized_query = query.split(" ")
+        scores = bm25.get_scores(tokenized_query)
+        min_score, max_score = min(scores), max(scores)
+        norm_scores = [(s - min_score) / (max_score - min_score) if max_score > min_score else 0.0 for s in scores]
+        for chunk, score in zip(chunks, norm_scores):
+            chunk.score = float(score)
+        return chunks
 
 keyword_service = KeywordService()

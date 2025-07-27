@@ -5,6 +5,7 @@ import uuid
 
 from app.db.database import get_qdrant_client
 from app.models.chunk import ChunkWithEmbedding
+from app.models.search import HybridChunk
 from app.utils import embedding_utils
 
 class VectorService:
@@ -111,5 +112,20 @@ class VectorService:
         except Exception:
             # Se la collection non esiste o altro errore, ritorna lista vuota
             return []
+        
+    @staticmethod
+    def normalize(chunks: List[HybridChunk]) -> List[HybridChunk]:
+        scores = [chunk.score for chunk in chunks if chunk.score is not None]
+        if not scores:
+            return chunks
+        min_score, max_score = min(scores), max(scores)
+        if max_score == min_score:
+            for chunk in chunks:
+                chunk.score = 0.0
+            return chunks
+        for chunk in chunks:
+            if chunk.score is not None:
+                chunk.score = (chunk.score - min_score) / (max_score - min_score)
+        return chunks
 
 vector_service = VectorService()

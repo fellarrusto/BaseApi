@@ -6,17 +6,20 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 from app.services.vector_service import vector_service
 from app.services.keyword_service import keyword_service
 from app.utils.embedding_utils import generate_embedding
+from app.utils.text_utils import clean_text
 from app.models.search import (
-    SearchRequest, KeywordSearchResponse,
+    HybridChunk, HybridSearchResponse, SearchRequest, KeywordSearchResponse,
     VectorSearchResponse, ChunkSearchResult
 )
 from app.models.document import DocumentResponse
+
 
 import logging
 logger = logging.getLogger(__name__)
 
 class SearchService:
     def __init__(self):
+        self.chunks_collection = "document_chunks"
         self.content_collection = "document_contents"
         self.documents_collection = "documents"
 
@@ -25,7 +28,7 @@ class SearchService:
         
         # Query usando keyword_service per trovare i document_id che matchano
         content_results = await keyword_service.text_search(
-            text=req.query,
+            text=clean_text(req.query),
             field="raw_text",
             collection_name=self.content_collection
         )
@@ -68,7 +71,7 @@ class SearchService:
         """Ricerca vettoriale usando VectorService"""
         
         # Genera embedding per la query
-        query_embedding = generate_embedding(req.query)
+        query_embedding = generate_embedding(clean_text(req.query))
         
         # Filtro per escludere chunks eliminati
         search_filter = Filter(
@@ -107,69 +110,59 @@ class SearchService:
             for point in search_result
         ]
         
-        # Estrai document_ids unici
-        document_ids = list(set(chunk.document_id for chunk in chunks))
-        
-        # Recupera documenti correlati usando keyword_service
-        documents = []
-        if document_ids:
-            docs = await keyword_service.query(
-                query={
-                    "_id": {"$in": [ObjectId(doc_id) for doc_id in document_ids]},
-                    "is_deleted": False
-                },
-                collection_name=self.documents_collection
-            )
-            
-            documents = [
-                DocumentResponse(
-                    id=str(doc["_id"]),
-                    title=doc["title"],
-                    author=doc.get("author"),
-                    description=doc.get("description"),
-                    tags=doc.get("tags", []),
-                    source_type=doc["source_type"],
-                    source_filename=doc.get("source_filename"),
-                    created_at=doc["created_at"],
-                    updated_at=doc["updated_at"]
-                )
-                for doc in docs
-            ]
         
         return VectorSearchResponse(
             query=req.query,
-            search_type="vector",
             total=len(chunks),
-            page=1,
             limit=req.limit,
-            chunks=chunks,
-            documents=documents
+            chunks=chunks
         )
 
     async def hybrid_search(self, req: SearchRequest):
         """Ricerca ibrida - combinazione di keyword e vector search"""
         
+        query = clean_text(req.query)
+        
         # Query MongoDB con ricerca testuale usando keyword_service
-        keyword_results = await keyword_service.query(
-            query={
-                "$or": [
-                    {"metadata.title": {"$regex": req.query, "$options": "i"}},
-                    {"text": {"$regex": req.query, "$options": "i"}}
-                ]
-            },
-            collection_name=self.content_collection
+        keyword_results = await keyword_service.text_search(
+            text=query,
+            field="text",
+            collection_name=self.chunks_collection
         )
         
         # Genera embedding e ricerca semantica usando vector_service
-        query_embedding = generate_embedding(req.query)
+        query_embedding = generate_embedding(query)
         semantic_results = await vector_service.query(
             query_vector=query_embedding,
-            limit=50
+            limit=req.limit
         )
         
-        print("Keyword results:", len(keyword_results))
-        print("Semantic results:", len(semantic_results))
+        # Converti risultati MongoDB
+        keyword_unified = [HybridChunk.from_mongodb(r) for r in keyword_results]
+
+        # Converti risultati Qdrant  
+        vector_unified = [HybridChunk.from_qdrant(r) for r in semantic_results]
         
-        raise NotImplementedError("Hybrid search not implemented")
+        keyword_unified = keyword_service.get_scores(query, keyword_unified)[:req.limit]
+        vector_unified = vector_service.normalize(vector_unified)
+        
+        print("Keyword results:", len(keyword_unified))
+        print("Vector results:", len(vector_unified))
+        
+
+        # Unisci e ordina
+        all_chunks = keyword_unified + vector_unified
+        all_chunks.sort(key=lambda x: x.score or 0, reverse=True)
+        
+        total = len(all_chunks)
+        # Applica il limite dalla richiesta
+        # all_chunks = all_chunks[:req.limit]
+        
+        return HybridSearchResponse(
+            query=req.query,
+            total=total,
+            limit=req.limit,
+            chunks=all_chunks
+        )
 
 search_service = SearchService()

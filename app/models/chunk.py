@@ -18,6 +18,7 @@ class ChunkSearchResult(BaseModel):
     """Risultato di ricerca da Qdrant"""
     chunk_id: str
     document_id: str
+    filename: str
     text: str
     index: int
     score: float
