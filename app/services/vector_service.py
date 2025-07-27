@@ -1,6 +1,6 @@
 # app/services/vector_service.py
 from typing import List, Optional, Dict, Any
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, VectorParams, Distance
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, VectorParams, Distance, ScoredPoint
 import uuid
 
 from app.db.database import get_qdrant_client
@@ -8,27 +8,29 @@ from app.models.chunk import ChunkWithEmbedding
 from app.utils import embedding_utils
 
 class VectorService:
-    def __init__(self):
-        self.collection_name = "document_chunks"
+    def __init__(self, collection_name: str = "document_chunks"):
+        self.collection_name = collection_name
     
-    async def ensure_collection_exists(self):
+    async def ensure_collection_exists(self, collection_name: Optional[str] = None):
         """Crea collection se non esiste"""
         client = get_qdrant_client()
+        collection = collection_name or self.collection_name
         
         try:
-            await client.get_collection(self.collection_name)
+            await client.get_collection(collection)
         except:
             await client.create_collection(
-                collection_name=self.collection_name,
+                collection_name=collection,
                 vectors_config=VectorParams(
                     size=embedding_utils.get_embedding_dimension(),
                     distance=Distance.COSINE
                 )
             )
     
-    async def insert_chunks(self, chunks: List[ChunkWithEmbedding], document_id: str):
+    async def insert_chunks(self, chunks: List[ChunkWithEmbedding], document_id: str, collection_name: Optional[str] = None):
         """Inserisce chunks in Qdrant"""
-        await self.ensure_collection_exists()
+        collection = collection_name or self.collection_name
+        await self.ensure_collection_exists(collection)
         client = get_qdrant_client()
         
         points = [
@@ -47,16 +49,17 @@ class VectorService:
         ]
         
         await client.upsert(
-            collection_name=self.collection_name,
+            collection_name=collection,
             points=points
         )
     
-    async def delete_document_chunks(self, document_id: str):
+    async def delete_document_chunks(self, document_id: str, collection_name: Optional[str] = None):
         """Elimina tutti i chunks di un documento"""
         client = get_qdrant_client()
+        collection = collection_name or self.collection_name
         
         result = await client.scroll(
-            collection_name=self.collection_name,
+            collection_name=collection,
             scroll_filter=Filter(
                 must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
             )
@@ -65,16 +68,17 @@ class VectorService:
         if result[0]:
             point_ids = [point.id for point in result[0]]
             await client.delete(
-                collection_name=self.collection_name,
+                collection_name=collection,
                 points_selector=point_ids
             )
     
-    async def update_chunks_deleted_flag(self, document_id: str, is_deleted: bool):
+    async def update_chunks_deleted_flag(self, document_id: str, is_deleted: bool, collection_name: Optional[str] = None):
         """Aggiorna flag deleted sui chunks"""
         client = get_qdrant_client()
+        collection = collection_name or self.collection_name
         
         result = await client.scroll(
-            collection_name=self.collection_name,
+            collection_name=collection,
             scroll_filter=Filter(
                 must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
             )
@@ -83,9 +87,29 @@ class VectorService:
         for point in result[0]:
             point.payload["is_deleted"] = is_deleted
             await client.set_payload(
-                collection_name=self.collection_name,
+                collection_name=collection,
                 payload=point.payload,
                 points=[point.id]
             )
+    
+    async def query(self, 
+                   query_vector: List[float], 
+                   limit: int = 10,
+                   filters: Optional[Filter] = None,
+                   collection_name: Optional[str] = None) -> List[ScoredPoint]:
+        """Query vettoriale generica"""
+        client = get_qdrant_client()
+        collection = collection_name or self.collection_name
+        
+        try:
+            return await client.search(
+                collection_name=collection,
+                query_vector=query_vector,
+                query_filter=filters,
+                limit=limit
+            )
+        except Exception:
+            # Se la collection non esiste o altro errore, ritorna lista vuota
+            return []
 
 vector_service = VectorService()

@@ -47,6 +47,21 @@ class DocumentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     
+    @classmethod
+    def from_dict(cls, doc: dict) -> "DocumentResponse":
+        """Factory method per creare DocumentResponse da documento MongoDB"""
+        return cls(
+            id=str(doc["_id"]),
+            title=doc["title"],
+            author=doc.get("author"),
+            description=doc.get("description"),
+            tags=doc.get("tags", []),
+            source_type=doc["source_type"],
+            source_filename=doc.get("source_filename"),
+            created_at=doc["created_at"],
+            updated_at=doc["updated_at"]
+        )
+    
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
 

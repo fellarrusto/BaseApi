@@ -1,8 +1,10 @@
 # app/services/search_service.py
-from typing import List, Set
+from typing import List
 from bson import ObjectId
 from qdrant_client.models import Filter, FieldCondition, MatchValue
-from app.db.database import get_database, get_qdrant_client
+
+from app.services.vector_service import vector_service
+from app.services.keyword_service import keyword_service
 from app.utils.embedding_utils import generate_embedding
 from app.models.search import (
     SearchRequest, KeywordSearchResponse,
@@ -17,74 +19,53 @@ class SearchService:
     def __init__(self):
         self.content_collection = "document_contents"
         self.documents_collection = "documents"
-        self.qdrant_collection = "document_chunks"
 
     async def keyword_search(self, req: SearchRequest) -> KeywordSearchResponse:
         """Ricerca basata su keyword nel contenuto dei documenti"""
-        db = get_database()
         
-        # Calcola skip per paginazione
-        skip = (req.page - 1) * req.limit
+        # Query usando keyword_service per trovare i document_id che matchano
+        content_results = await keyword_service.text_search(
+            text=req.query,
+            field="raw_text",
+            collection_name=self.content_collection
+        )
         
-        # Query MongoDB con regex per ricerca testuale
-        query = {"raw_text": {"$regex": req.query, "$options": "i"}}
-        
-        # Trova i document_id che matchano
-        content_cursor = db[self.content_collection].find(query, {"document_id": 1})
-        document_ids = [doc["document_id"] for doc in await content_cursor.to_list(None)]
+        document_ids = [doc["document_id"] for doc in content_results]
         
         if not document_ids:
             return KeywordSearchResponse(
                 query=req.query,
                 search_type="keyword",
                 total=0,
-                page=req.page,
+                page=1,
                 limit=req.limit,
                 documents=[]
             )
         
-        # Trova i documenti corrispondenti
-        doc_query = {
-            "_id": {"$in": document_ids},
-            "is_deleted": False
-        }
-        
-        # Count totale
-        total = await db[self.documents_collection].count_documents(doc_query)
-        
-        # Recupera documenti con paginazione
-        docs_cursor = db[self.documents_collection].find(doc_query).skip(skip).limit(req.limit)
-        documents = await docs_cursor.to_list(None)
+        # Trova i documenti corrispondenti usando keyword_service
+        documents = await keyword_service.query(
+            query={
+                "_id": {"$in": document_ids},
+                "is_deleted": False
+            },
+            collection_name=self.documents_collection,
+            limit=req.limit
+        )
         
         # Converti in response model
-        doc_responses = [
-            DocumentResponse(
-                id=str(doc["_id"]),
-                title=doc["title"],
-                author=doc.get("author"),
-                description=doc.get("description"),
-                tags=doc.get("tags", []),
-                source_type=doc["source_type"],
-                source_filename=doc.get("source_filename"),
-                created_at=doc["created_at"],
-                updated_at=doc["updated_at"]
-            )
-            for doc in documents
-        ]
+        doc_responses = [DocumentResponse.from_dict(doc) for doc in documents]
         
         return KeywordSearchResponse(
             query=req.query,
             search_type="keyword",
-            total=total,
-            page=req.page,
+            total=len(doc_responses),
+            page=1,
             limit=req.limit,
             documents=doc_responses
         )
 
     async def vector_search(self, req: SearchRequest) -> VectorSearchResponse:
-        """Ricerca vettoriale usando Qdrant"""
-        client = get_qdrant_client()
-        db = get_database()
+        """Ricerca vettoriale usando VectorService"""
         
         # Genera embedding per la query
         query_embedding = generate_embedding(req.query)
@@ -94,27 +75,19 @@ class SearchService:
             must=[FieldCondition(key="is_deleted", match=MatchValue(value=False))]
         )
         
-        try:
-            # Ricerca vettoriale in Qdrant - senza offset, usa solo limit
-            search_result = await client.search(
-                collection_name=self.qdrant_collection,
-                query_vector=query_embedding,
-                query_filter=search_filter,
-                limit=req.limit * req.page  # Prende più risultati per simulare paginazione
-            )
-            
-            # Implementa paginazione manualmente
-            start_idx = (req.page - 1) * req.limit
-            end_idx = start_idx + req.limit
-            paginated_results = search_result[start_idx:end_idx]
-            
-        except Exception as e:
-            # Se la collection non esiste o altro errore, ritorna vuoto
+        # Ricerca vettoriale usando vector_service
+        search_result = await vector_service.query(
+            query_vector=query_embedding,
+            limit=req.limit,
+            filters=search_filter
+        )
+        
+        if not search_result:
             return VectorSearchResponse(
                 query=req.query,
                 search_type="vector",
                 total=0,
-                page=req.page,
+                page=1,
                 limit=req.limit,
                 chunks=[],
                 documents=[]
@@ -131,20 +104,22 @@ class SearchService:
                 metadata={k: v for k, v in point.payload.items() 
                          if k not in ["document_id", "text", "index", "is_deleted"]}
             )
-            for point in paginated_results
+            for point in search_result
         ]
         
         # Estrai document_ids unici
         document_ids = list(set(chunk.document_id for chunk in chunks))
         
-        # Recupera documenti correlati
+        # Recupera documenti correlati usando keyword_service
         documents = []
         if document_ids:
-            docs_cursor = db[self.documents_collection].find({
-                "_id": {"$in": [ObjectId(doc_id) for doc_id in document_ids]},
-                "is_deleted": False
-            })
-            docs = await docs_cursor.to_list(None)
+            docs = await keyword_service.query(
+                query={
+                    "_id": {"$in": [ObjectId(doc_id) for doc_id in document_ids]},
+                    "is_deleted": False
+                },
+                collection_name=self.documents_collection
+            )
             
             documents = [
                 DocumentResponse(
@@ -164,41 +139,37 @@ class SearchService:
         return VectorSearchResponse(
             query=req.query,
             search_type="vector",
-            total=len(search_result),  # Totale risultati trovati
-            page=req.page,
+            total=len(chunks),
+            page=1,
             limit=req.limit,
             chunks=chunks,
             documents=documents
         )
 
     async def hybrid_search(self, req: SearchRequest):
-        """Ricerca ibrida - ricerca keyword nella collection document_contents"""
-        db = get_database()
-        client = get_qdrant_client()
+        """Ricerca ibrida - combinazione di keyword e vector search"""
         
-        # Query MongoDB con ricerca testuale in title e text
-        query = {
-            "$or": [
-                {"metadata.title": {"$regex": req.query, "$options": "i"}},
-                {"text": {"$regex": req.query, "$options": "i"}}
-            ]
-        }
+        # Query MongoDB con ricerca testuale usando keyword_service
+        keyword_results = await keyword_service.query(
+            query={
+                "$or": [
+                    {"metadata.title": {"$regex": req.query, "$options": "i"}},
+                    {"text": {"$regex": req.query, "$options": "i"}}
+                ]
+            },
+            collection_name=self.content_collection
+        )
         
-        # Recupera risultati keyword
-        content_cursor = db[self.content_collection].find(query)
-        keyword_results = await content_cursor.to_list(None)
-        print(keyword_results[0])
-        
-        # Genera embedding e ricerca semantica
+        # Genera embedding e ricerca semantica usando vector_service
         query_embedding = generate_embedding(req.query)
-        semantic_results = await client.search(
-            collection_name=self.qdrant_collection,
+        semantic_results = await vector_service.query(
             query_vector=query_embedding,
             limit=50
         )
-        print(semantic_results[0])
-
-
+        
+        print("Keyword results:", len(keyword_results))
+        print("Semantic results:", len(semantic_results))
+        
         raise NotImplementedError("Hybrid search not implemented")
 
 search_service = SearchService()
