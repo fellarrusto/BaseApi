@@ -3,6 +3,7 @@ from fastapi import HTTPException, Request
 from datetime import datetime
 import time
 import inspect
+import traceback
 from app.services.log_service import log_service
 from app.models.log import AuditLogInDB
 
@@ -19,6 +20,7 @@ def handle_errors(func):
                 detail={
                     "error": type(e).__name__,
                     "message": str(e),
+                    "traceback": traceback.format_exc(),
                     "timestamp": datetime.now().isoformat()
                 }
             )
@@ -32,12 +34,14 @@ def audit_log(method: str = "UNKNOWN", metadata: dict = None):
             status = "success"
             error_info = None
             result = None
+            exception_to_raise = None
             
             try:
                 result = await func(*args, **kwargs)
             except Exception as e:
                 status = "error"
                 error_info = str(e)
+                exception_to_raise = e
 
             duration = (time.time() - start_time) * 1000
             
@@ -54,10 +58,13 @@ def audit_log(method: str = "UNKNOWN", metadata: dict = None):
                 metadata=log_metadata
             )
             
-            await log_service.save_log(log_entry)
+            try:
+                await log_service.save_log(log_entry)
+            except:
+                pass
             
-            if status == "error":
-                raise
+            if exception_to_raise:
+                raise exception_to_raise
             
             return result
         return wrapper

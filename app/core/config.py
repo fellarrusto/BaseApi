@@ -1,11 +1,10 @@
+import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "SybillaApi"
-    MONGODB_URL: str = "mongodb://mongo:27017"
-    DATABASE_NAME: str = "sybilla_db"
-    QDRANT_HOST: str = "qdrant"
-    QDRANT_PORT: int = 6333
+    PROJECT_NAME: str = "Minerva Search"
+    MONGODB_URL: str = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
+    DATABASE_NAME: str = os.environ.get("MONGO_DB", "sybilla_db")
 
     class Config:
         env_file = ".env"
