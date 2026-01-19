@@ -1,4 +1,3 @@
-## MongoDB
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.config import settings
 
@@ -11,6 +10,7 @@ db = Database()
 async def connect_to_mongo():
     db.client = AsyncIOMotorClient(settings.MONGODB_URL)
     db.db = db.client[settings.DATABASE_NAME]
+    await db.client.admin.command('ping')
 
 async def close_mongo_connection():
     if db.client:

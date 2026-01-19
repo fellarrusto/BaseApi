@@ -10,7 +10,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - MONGODB_URI=mongodb://base-mongo:27017
-      - MONGO_DB=sybilla_db
+      - MONGO_DB=base_api_db
     ports:
       - "9000:8000"
     depends_on:

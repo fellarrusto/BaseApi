@@ -42,7 +42,7 @@ def audit_log(method: str = "UNKNOWN", metadata: dict = None):
                 status = "error"
                 error_info = str(e)
                 exception_to_raise = e
-
+            
             duration = (time.time() - start_time) * 1000
             
             log_metadata = metadata or {}
@@ -58,10 +58,7 @@ def audit_log(method: str = "UNKNOWN", metadata: dict = None):
                 metadata=log_metadata
             )
             
-            try:
-                await log_service.save_log(log_entry)
-            except:
-                pass
+            await log_service.save_log(log_entry)
             
             if exception_to_raise:
                 raise exception_to_raise
