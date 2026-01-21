@@ -10,27 +10,45 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - MONGODB_URI=mongodb://base-mongo:27017
-      - MONGO_DB=base_api_db
+      - MONGO_DB=${MONGO_DB}
     ports:
-      - "9000:8000"
+      - "${API_PORT}:8000"
+    depends_on:
+      - base-mongo
+
+  base-mcp:
+    build: .
+    container_name: base-mcp
+    # Rimuovi 'app/' se mcp_main.py è dentro la cartella app che viene montata in /app
+    command: python -m app.mcp_main 
+    volumes:
+      - .:/app
+    environment:
+      - MONGODB_URI=mongodb://base-mongo:27017
+      - MONGO_DB=${MONGO_DB}
+      - MCP_API_KEY=${MCP_API_KEY}
+      - MCP_SERVER_URL=${MCP_SERVER_URL}
+      - PYTHONPATH=/app # Fondamentale per far vedere il modulo 'app' a python
+    ports:
+      - "${MCP_PORT}:5009"
     depends_on:
       - base-mongo
 
   base-mongo:
-    image: mongo:6
+    image: mongo:${MONGO_VERSION:-6}
     container_name: base-mongo
     volumes:
       - base_mongo_data:/data/db
 
   base-mongo-express:
-    image: mongo-express:1.0.0-alpha.4
+    image: mongo-express:${MONGO_EXPRESS_VERSION:-1.0.0-alpha.4}
     container_name: base-mongo-express
     ports:
-      - "8081:8081"
+      - "${MONGO_EXPRESS_PORT}:8081"
     environment:
       - ME_CONFIG_MONGODB_SERVER=base-mongo
-      - ME_CONFIG_BASICAUTH_USERNAME=admin
-      - ME_CONFIG_BASICAUTH_PASSWORD=admin
+      - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USER}
+      - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASSWORD}
     depends_on:
       - base-mongo
     restart: unless-stopped

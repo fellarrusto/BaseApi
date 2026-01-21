@@ -7,6 +7,10 @@ class PyObjectId(ObjectId):
         return core_schema.no_info_plain_validator_function(cls.validate)
 
     @classmethod
+    def __get_pydantic_json_schema__(cls, _core_schema, handler):
+        return {"type": "string", "example": "507f1f77bcf86cd799439011"}
+
+    @classmethod
     def validate(cls, v):
         if not ObjectId.is_valid(v):
             raise ValueError("Invalid ObjectId")
