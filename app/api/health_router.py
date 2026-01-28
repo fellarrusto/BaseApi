@@ -10,7 +10,7 @@ router = APIRouter(prefix="/health", tags=["health"])
 # Timestamp di avvio dell'applicazione
 startup_time = time.time()
 
-@router.get("/check",response_model=HealthCheckResponse,status_code=status.HTTP_200_OK)
+@router.get("/check",response_model=HealthCheckResponse,status_code=status.HTTP_200_OK, operation_id="health_check")
 @handle_errors
 @audit_log(method="GET", metadata={"service": "health"})
 async def health_check() -> HealthCheckResponse:

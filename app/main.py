@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter
+from fastapi_mcp import FastApiMCP
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.database import connect_to_mongo, close_mongo_connection
@@ -6,13 +7,25 @@ from app.db.database import connect_to_mongo, close_mongo_connection
 from app.api import health_router
 from app.api import log_router
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_to_mongo()
     yield
     await close_mongo_connection()
 
+
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
+
+mcp = FastApiMCP(
+    app,
+    name=settings.PROJECT_NAME,
+    server_url=settings.MCP_SERVER_URL,
+    describe_all_responses=True,
+    describe_full_response_schema=True,
+)
+
+mcp.mount()
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(health_router.router)
