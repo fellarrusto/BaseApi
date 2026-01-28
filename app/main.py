@@ -17,18 +17,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
+router = APIRouter(prefix="/api/v1")
+router.include_router(health_router.router)
+router.include_router(log_router.router)
+
+app.include_router(router)
+
 mcp = FastApiMCP(
     app,
     name=settings.PROJECT_NAME,
-    server_url=settings.MCP_SERVER_URL,
+    base_url=settings.MCP_SERVER_URL,
     describe_all_responses=True,
     describe_full_response_schema=True,
 )
 
 mcp.mount()
 
-router = APIRouter(prefix="/api/v1")
-router.include_router(health_router.router)
-router.include_router(log_router.router)
 
-app.include_router(router)

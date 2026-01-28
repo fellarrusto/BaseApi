@@ -4,10 +4,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Base API"
     MONGODB_URI: str = "mongodb://localhost:27017"
     MONGO_DB: str = "sybilla_db"
-    API_PORT: int = 9000
-    MCP_PORT: int = 5009
     MCP_API_KEY: str = "dev-key"
-    MCP_SERVER_URL: str = "http://localhost:85009"
+    MCP_SERVER_URL: str = "http://localhost:8000"
     MONGO_VERSION: str = "6"
     MONGO_EXPRESS_PORT: int = 8081
     MONGO_EXPRESS_VERSION: str = "1.0.0-alpha.4"
@@ -24,5 +22,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 settings = Settings()
