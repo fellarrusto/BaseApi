@@ -16,24 +16,6 @@ services:
     depends_on:
       - base-mongo
 
-  base-mcp:
-    build: .
-    container_name: base-mcp
-    # Rimuovi 'app/' se mcp_main.py è dentro la cartella app che viene montata in /app
-    command: python -m app.mcp_main 
-    volumes:
-      - .:/app
-    environment:
-      - MONGODB_URI=mongodb://base-mongo:27017
-      - MONGO_DB=${MONGO_DB}
-      - MCP_API_KEY=${MCP_API_KEY}
-      - MCP_SERVER_URL=${MCP_SERVER_URL}
-      - PYTHONPATH=/app # Fondamentale per far vedere il modulo 'app' a python
-    ports:
-      - "${MCP_PORT}:5009"
-    depends_on:
-      - base-mongo
-
   base-mongo:
     image: mongo:${MONGO_VERSION:-6}
     container_name: base-mongo
