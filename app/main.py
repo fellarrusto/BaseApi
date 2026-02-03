@@ -2,16 +2,16 @@
 from fastapi import FastAPI, APIRouter
 from contextlib import asynccontextmanager
 from app.core.config import settings
-from app.db.database import connect_to_mongo, close_mongo_connection
+from app.db.database import db_disconnect, db_connect
 from app.api import health_router, log_router
 from app.core.mcp import mcp
 from mcp.server.sse import SseServerTransport
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await connect_to_mongo()
+    await db_connect()
     yield
-    await close_mongo_connection()
+    await db_disconnect()
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
