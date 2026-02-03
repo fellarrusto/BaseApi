@@ -109,3 +109,4 @@ venv.bak/
 
 /models
 /.claude
+/.mcp.json

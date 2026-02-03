@@ -1,3 +1,5 @@
+from app.db.base_repository import BaseRepository
+from app.db.mongo_repository import MongoRepository
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.config import settings
 
@@ -7,14 +9,18 @@ class Database:
 
 db = Database()
 
-async def connect_to_mongo():
-    db.client = AsyncIOMotorClient(settings.MONGODB_URL)
-    db.db = db.client[settings.DATABASE_NAME]
+async def db_connect():
+    # dentro qui sai che è mongo
+    db.client = AsyncIOMotorClient(settings.MONGODB_URI)
+    db.db = db.client[settings.MONGO_DB]
     await db.client.admin.command('ping')
 
-async def close_mongo_connection():
+async def db_disconnect():
     if db.client:
         db.client.close()
+        
+def get_repository(collection: str) -> BaseRepository:
+    return MongoRepository(get_database(), collection)
 
 def get_database():
     return db.db
