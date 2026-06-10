@@ -10,7 +10,6 @@ class Database:
 db = Database()
 
 async def db_connect():
-    # dentro qui sai che è mongo
     db.client = AsyncIOMotorClient(settings.MONGODB_URI)
     db.db = db.client[settings.MONGO_DB]
     await db.client.admin.command('ping')
@@ -18,7 +17,7 @@ async def db_connect():
 async def db_disconnect():
     if db.client:
         db.client.close()
-        
+
 def get_repository(collection: str) -> BaseRepository:
     return MongoRepository(get_database(), collection)
 

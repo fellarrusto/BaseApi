@@ -10,9 +10,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - MONGODB_URI=mongodb://base-mongo:27017
-      - MONGO_DB=${MONGO_DB}
+      - MONGO_DB=${MONGO_DB:-base_api_db}
     ports:
-      - "${API_PORT}:8000"
+      - "${API_PORT:-5008}:8000"
     depends_on:
       - base-mongo
 
@@ -26,11 +26,11 @@ services:
     image: mongo-express:${MONGO_EXPRESS_VERSION:-1.0.0-alpha.4}
     container_name: base-mongo-express
     ports:
-      - "${MONGO_EXPRESS_PORT}:8081"
+      - "${MONGO_EXPRESS_PORT:-8081}:8081"
     environment:
       - ME_CONFIG_MONGODB_SERVER=base-mongo
-      - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USER}
-      - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASSWORD}
+      - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USER:-admin}
+      - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASSWORD:-admin}
     depends_on:
       - base-mongo
     restart: unless-stopped
