@@ -5,7 +5,7 @@ Static check (no app dependencies needed): run with `pytest`.
 """
 import ast
 from pathlib import Path
-from typing import Iterator, List
+from typing import Iterator, List, Optional
 
 APP_DIR = Path(__file__).resolve().parent.parent / "app"
 
@@ -24,8 +24,11 @@ FORBIDDEN_IMPORTS = {
     "integrations": ["app.api", "app.services", "app.repositories", "app.db", "fastapi", *DRIVERS],
     "schemas": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.models", *DRIVERS],
     "models": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.schemas"],
-    "core": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "fastapi"],
+    "core": ["app.api", "app.repositories", "app.db", "app.integrations", *DRIVERS, *HTTP_CLIENTS],
 }
+
+# Decorators every endpoint must have, right under the @router.<method>(...) line
+ROUTE_DECORATORS = ["handle_errors", "audit_log"]
 
 
 def _imported_modules(tree: ast.AST) -> Iterator[str]:
@@ -43,6 +46,25 @@ def _matches(module: str, prefix: str) -> bool:
 
 def _python_files(layer: str) -> Iterator[Path]:
     return (APP_DIR / layer).rglob("*.py")
+
+
+def _decorator_name(node: ast.expr) -> Optional[str]:
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _is_route_decorator(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "router"
+    )
 
 
 def test_layers_respect_import_boundaries() -> None:
@@ -70,3 +92,21 @@ def test_services_use_only_public_repository_methods() -> None:
             ):
                 violations.append(f"{path.relative_to(APP_DIR.parent)}:{node.lineno}: {node.value.id}.{node.attr}")
     assert not violations, "Services must call repository domain methods only:\n" + "\n".join(violations)
+
+
+def test_endpoints_use_mandatory_decorators() -> None:
+    violations: List[str] = []
+    for path in _python_files("api"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef) or not node.decorator_list:
+                continue
+            if not _is_route_decorator(node.decorator_list[0]):
+                continue
+            names = [_decorator_name(d) for d in node.decorator_list[1:]]
+            if names[:len(ROUTE_DECORATORS)] != ROUTE_DECORATORS:
+                violations.append(f"{path.relative_to(APP_DIR.parent)}:{node.lineno}: {node.name}")
+    assert not violations, (
+        "Endpoints must be decorated with @router.<method>, @handle_errors, @audit_log (in this order):\n"
+        + "\n".join(violations)
+    )

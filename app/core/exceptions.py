@@ -3,8 +3,8 @@ class AppError(Exception):
     Base class for expected application errors.
 
     Services and repositories raise these instead of HTTPException, so they
-    stay usable outside an HTTP request. app/api/error_handlers.py maps each
-    class to an HTTP status code.
+    stay usable outside an HTTP request. @handle_errors (app/core/decorator.py)
+    maps each class to an HTTP status code.
     """
 
 

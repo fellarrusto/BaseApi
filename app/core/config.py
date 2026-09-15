@@ -1,3 +1,5 @@
+from typing import List
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -6,6 +8,10 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "Base API"
     APP_VERSION: str = "1.0.0"
+    LOG_LEVEL: str = "INFO"
+
+    # Browser origins allowed to call the API, as a JSON list. Empty = CORS disabled
+    CORS_ORIGINS: List[str] = []
 
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"

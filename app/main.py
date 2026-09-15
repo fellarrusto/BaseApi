@@ -1,13 +1,15 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import v1
-from app.api.error_handlers import register_error_handlers
-from app.api.middleware import AuditMiddleware
 from app.core.config import settings
+from app.core.logging_config import setup_logging
 from app.db.database import db_connect, db_disconnect
 from app.integrations.clients import integrations_connect, integrations_disconnect
+
+setup_logging(settings.LOG_LEVEL)
 
 
 @asynccontextmanager
@@ -20,6 +22,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.PROJECT_NAME, version=settings.APP_VERSION, lifespan=lifespan)
-app.add_middleware(AuditMiddleware)
-register_error_handlers(app)
+
+if settings.CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        # A wildcard origin must never be combined with credentials
+        allow_credentials="*" not in settings.CORS_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+
 app.include_router(v1.api_router)

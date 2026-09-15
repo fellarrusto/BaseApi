@@ -72,6 +72,7 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 6. Services raise exceptions from `app/core/exceptions.py`, never `HTTPException`: they must also work outside an HTTP request.
 7. Models and schemas are pure data structures.
 8. Skipping a layer is forbidden, even for "simple" endpoints.
+9. Every endpoint has `@handle_errors` and `@audit_log`, in this order (see [Decorators](#decorators)).
 
 **These rules are enforced by [tests/test_architecture.py](tests/test_architecture.py). Run `pytest` after every change. If it fails, fix the code, never the test.**
 
@@ -80,15 +81,15 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 ```
 app/
 ├── api/
-│   ├── error_handlers.py      # Maps app exceptions to HTTP responses
-│   ├── middleware.py          # AuditMiddleware (automatic audit log)
 │   └── v1/
 │       ├── __init__.py        # api_router: registers every v1 router
 │       ├── health_router.py
 │       └── audit_log_router.py
 ├── core/
 │   ├── config.py              # Settings (env vars)
-│   └── exceptions.py          # AppError, NotFoundError, InvalidInputError, ExternalServiceError
+│   ├── decorator.py           # @handle_errors, @audit_log
+│   ├── exceptions.py          # AppError, NotFoundError, InvalidInputError, ExternalServiceError
+│   └── logging_config.py      # setup_logging()
 ├── db/                        # Storage layer (driver-specific)
 │   ├── database.py            # Connection lifecycle, get_storage(), ping_database()
 │   ├── base_storage.py        # Abstract BaseStorage interface
@@ -213,9 +214,21 @@ The available LLM connector is `OpenRouterClient` (OpenAI-compatible API): set `
 
 ---
 
-## Errors
+## Decorators
 
-Services raise exceptions from [app/core/exceptions.py](app/core/exceptions.py); [app/api/error_handlers.py](app/api/error_handlers.py) turns them into responses with body `{"error": "<ExceptionClass>", "message": "..."}`.
+Every endpoint uses both decorators from [app/core/decorator.py](app/core/decorator.py), in this order (checked by the architecture test):
+
+```python
+@router.get("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
+@handle_errors
+@audit_log(metadata={"service": "products"})
+async def get_product(product_id: str) -> ProductResponse:
+    ...
+```
+
+### @handle_errors
+
+Converts exceptions raised by the endpoint into responses with body `{"error": "<ExceptionClass>", "message": "..."}`. Services raise exceptions from [app/core/exceptions.py](app/core/exceptions.py):
 
 | Exception | Status |
 |-----------|--------|
@@ -223,14 +236,31 @@ Services raise exceptions from [app/core/exceptions.py](app/core/exceptions.py);
 | `InvalidInputError` | 400 |
 | `ExternalServiceError` | 502 |
 | Any other `AppError` | 400 |
-| Unexpected exception | 500, generic message (traceback only in the server log) |
+| `HTTPException` | passed through unchanged |
+| Unexpected exception | 500, generic message; traceback in the log, never in the response |
 | Request validation (FastAPI) | 422 |
 
-To add an error type: subclass `AppError` and add it to `_STATUS_CODES` in `error_handlers.py`.
+To add an error type: subclass `AppError` and add it to `_STATUS_CODES` in `decorator.py`.
 
-## Audit Logging
+### @audit_log
 
-`AuditMiddleware` ([middleware.py](app/api/middleware.py)) records every call to an API route in `audit_logs`, with no per-route code. Fields: `action` (route function name), `endpoint` (request path), `method`, `status_code`, `duration_ms`, `timestamp` (UTC). Docs and unmatched paths are skipped, and a failure while writing the log is logged without affecting the response.
+Records every call in the `audit_logs` collection: `action` (function name), `endpoint` (request path), `method`, `status` (`success`/`error`), `duration_ms`, `timestamp` (UTC), `metadata` (the dict passed to the decorator, plus `error` on failure).
+
+Method and path are read from the request: the decorator adds a hidden `Request` parameter to the endpoint signature, so the endpoint must not declare one for it. A failure while writing the log is logged and never affects the response.
+
+## Logging
+
+`setup_logging()` ([logging_config.py](app/core/logging_config.py)) runs at startup and configures the `app` logger: stderr, format `timestamp LEVEL [logger.name] message`, level from `LOG_LEVEL`. Uvicorn and third-party loggers are left untouched.
+
+In any module under `app/`:
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+```
+
+Never use `print`, and never log secrets (API keys, tokens, passwords, full LLM prompts with user data).
 
 ---
 
@@ -516,6 +546,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Query, status
 
+from app.core.decorator import audit_log, handle_errors
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services.product_service import product_service
 
@@ -523,18 +554,24 @@ router = APIRouter(prefix="/products", tags=["products"])
 
 
 @router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+@handle_errors
+@audit_log(metadata={"service": "products"})
 async def create_product(data: ProductCreate) -> ProductResponse:
     """Create a new product."""
     return await product_service.create(data)
 
 
 @router.get("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
+@handle_errors
+@audit_log(metadata={"service": "products"})
 async def get_product(product_id: str) -> ProductResponse:
     """Fetch a product by id."""
     return await product_service.get_by_id(product_id)
 
 
 @router.get("", response_model=List[ProductResponse], status_code=status.HTTP_200_OK)
+@handle_errors
+@audit_log(metadata={"service": "products"})
 async def get_products(
     category: Optional[str] = Query(None, description="Filter by category"),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
@@ -545,12 +582,16 @@ async def get_products(
 
 
 @router.patch("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
+@handle_errors
+@audit_log(metadata={"service": "products"})
 async def update_product(product_id: str, data: ProductUpdate) -> ProductResponse:
     """Update an existing product."""
     return await product_service.update(product_id, data)
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+@handle_errors
+@audit_log(metadata={"service": "products"})
 async def delete_product(product_id: str) -> None:
     """Delete a product."""
     await product_service.delete(product_id)
@@ -559,7 +600,8 @@ async def delete_product(product_id: str) -> None:
 - `prefix` and `tags` always set; collection routes use `""`, not `"/"`.
 - Always `response_model`, explicit `status.HTTP_*`, return type, docstring (shown in Swagger).
 - Query params with `Query()` and a description; paginated lists take `limit` and `skip`.
-- No try/except and no decorators: errors and audit are handled globally.
+- **Mandatory decorators**: `@router.<method>` → `@handle_errors` → `@audit_log(metadata={"service": "<feature>"})` → `async def`.
+- No try/except and no logic: the router only calls the service.
 
 ### 6. Register — `app/api/v1/__init__.py`
 
@@ -581,6 +623,16 @@ class Settings(BaseSettings):
 
     MY_NEW_VAR: str = "default_value"
 ```
+
+### CORS
+
+Disabled by default. To let a browser frontend on another origin call the API, set `CORS_ORIGINS` to a JSON list:
+
+```env
+CORS_ORIGINS='["http://localhost:5173"]'
+```
+
+`"*"` allows any origin but automatically disables credentials (cookies, `Authorization` sent by the browser).
 
 ## Docker
 
@@ -609,7 +661,7 @@ docker-compose down [-v]        # stop [and remove volumes]
 - [ ] `app/schemas/{feature}.py`: `Create`, `Update` (if needed), `Response`
 - [ ] `app/repositories/{feature}_repository.py`: extends `EntityRepository`, domain methods, singleton
 - [ ] `app/services/{feature}_service.py`: uses only public repository methods, raises `AppError` subclasses, singleton
-- [ ] `app/api/v1/{feature}_router.py`: schemas only, `response_model` + `status_code`
+- [ ] `app/api/v1/{feature}_router.py`: schemas only, `@handle_errors` + `@audit_log`, `response_model` + `status_code`
 - [ ] Router registered in `app/api/v1/__init__.py`
 - [ ] `pytest` passes
 

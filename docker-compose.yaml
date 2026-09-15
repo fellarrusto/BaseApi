@@ -12,6 +12,8 @@ services:
       - MONGODB_URI=mongodb://base-mongo:27017
       - MONGO_DB=${MONGO_DB:-base_api_db}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-[]}
     ports:
       - "${API_PORT:-5008}:8000"
     depends_on:

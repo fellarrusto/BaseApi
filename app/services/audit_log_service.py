@@ -1,5 +1,5 @@
 from datetime import date, datetime, time, timedelta, timezone
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from app.core.exceptions import InvalidInputError
 from app.models.audit_log import AuditLogInDB
@@ -15,16 +15,18 @@ class AuditLogService:
         action: str,
         endpoint: str,
         method: str,
-        status_code: int,
-        duration_ms: float
+        status: str,
+        duration_ms: float,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Persist one audit entry for a handled API call."""
+        """Persist one audit entry for an endpoint call."""
         await audit_log_repository.create(AuditLogInDB(
             action=action,
             endpoint=endpoint,
             method=method,
-            status_code=status_code,
-            duration_ms=duration_ms
+            status=status,
+            duration_ms=duration_ms,
+            metadata=metadata or {}
         ))
 
     async def get_by_date_range(

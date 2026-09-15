@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any, Dict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,8 +12,9 @@ class AuditLogInDB(BaseModel):
 
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     timestamp: datetime = Field(default_factory=utc_now)
-    action: str        # route function name, e.g. "get_audit_logs"
+    action: str        # endpoint function name, e.g. "get_audit_logs"
     endpoint: str      # request path, e.g. "/api/v1/audit-logs"
     method: str        # e.g. "GET"
-    status_code: int
+    status: str        # "success" | "error"
     duration_ms: float
+    metadata: Dict[str, Any] = Field(default_factory=dict)  # from @audit_log, plus "error" on failure
