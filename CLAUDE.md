@@ -61,10 +61,11 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 | **Repository** | `app/repositories` | Typed data access for one entity, owns every query/filter | Business logic, HTTP, driver imports |
 | **Storage** | `app/db` | Driver code behind `BaseStorage` (dicts in/out) | Anything entity-specific |
 | **Integration** | `app/integrations` | Connectors to external services (LLM, APIs) | Business logic, data access |
+| **Decorators** | `app/decorators` | Endpoint cross-cutting concerns: errors, audit, auth | Business logic, data access |
 
 **Rules you must never break:**
 
-1. A router only calls its service. It imports from `app.schemas` and `app.services`, never from `app.models`, `app.repositories` or `app.db`.
+1. A router only calls its service. It imports from `app.schemas`, `app.services` and `app.decorators`, never from `app.models`, `app.repositories` or `app.db`.
 2. **A service accesses data only through entity repositories** (`app/repositories`). It never imports `app.db`, `get_storage()`, or a driver.
 3. Services call only **public** repository methods. Every filter (`{"field": {"$gte": ...}}`) is written inside a repository method, never in a service.
 4. Driver code (`pymongo`, `asyncpg`) lives only in `app/db`. `bson.ObjectId` is allowed only there and in `app/models` (through `PyObjectId`).
@@ -72,7 +73,7 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 6. Services raise exceptions from `app/core/exceptions.py`, never `HTTPException`: they must also work outside an HTTP request.
 7. Models and schemas are pure data structures.
 8. Skipping a layer is forbidden, even for "simple" endpoints.
-9. Every endpoint has `@handle_errors` and `@audit_log`, in this order (see [Decorators](#decorators)).
+9. Every endpoint has `@handle_errors` and `@audit_log`, in this order; protected endpoints add `@require_auth` right after them (see [Decorators](#decorators)).
 
 **These rules are enforced by [tests/test_architecture.py](tests/test_architecture.py). Run `pytest` after every change. If it fails, fix the code, never the test.**
 
@@ -87,9 +88,14 @@ app/
 │       └── audit_log_router.py
 ├── core/
 │   ├── config.py              # Settings (env vars)
-│   ├── decorator.py           # @handle_errors, @audit_log
-│   ├── exceptions.py          # AppError, NotFoundError, InvalidInputError, ExternalServiceError
+│   ├── exceptions.py          # AppError and subclasses (400, 401, 403, 404, 502)
 │   └── logging_config.py      # setup_logging()
+├── decorators/                # Endpoint decorators
+│   ├── __init__.py            # from app.decorators import handle_errors, audit_log, require_auth
+│   ├── _signature.py          # Helper for parameters injected by FastAPI
+│   ├── audit_log.py           # @audit_log
+│   ├── auth.py                # @require_auth
+│   └── error_handler.py       # @handle_errors
 ├── db/                        # Storage layer (driver-specific)
 │   ├── database.py            # Connection lifecycle, get_storage(), ping_database()
 │   ├── base_storage.py        # Abstract BaseStorage interface
@@ -109,12 +115,14 @@ app/
 │   └── health_repository.py
 ├── schemas/                   # API contract (Create/Update/Response)
 │   ├── audit_log.py
+│   ├── auth.py                # AuthUser
 │   ├── error.py
 │   └── health.py
 ├── services/
 │   ├── audit_log_service.py
+│   ├── auth_service.py        # Token → AuthUser: implement _verify_token()
 │   └── health_service.py
-└── main.py                    # App assembly: lifespan, middleware, handlers, routers
+└── main.py                    # App assembly: logging, lifespan, CORS, routers
 tests/
 └── test_architecture.py       # Layer boundary checks
 ```
@@ -216,12 +224,13 @@ The available LLM connector is `OpenRouterClient` (OpenAI-compatible API): set `
 
 ## Decorators
 
-Every endpoint uses both decorators from [app/core/decorator.py](app/core/decorator.py), in this order (checked by the architecture test):
+Endpoints use the decorators from [app/decorators](app/decorators), in this order (checked by the architecture test):
 
 ```python
 @router.get("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
-@handle_errors
-@audit_log(metadata={"service": "products"})
+@handle_errors                                  # mandatory
+@audit_log(metadata={"service": "products"})    # mandatory
+@require_auth(roles=["admin"])                  # optional: protected endpoints only
 async def get_product(product_id: str) -> ProductResponse:
     ...
 ```
@@ -232,6 +241,8 @@ Converts exceptions raised by the endpoint into responses with body `{"error": "
 
 | Exception | Status |
 |-----------|--------|
+| `UnauthorizedError` | 401 (with `WWW-Authenticate: Bearer`) |
+| `ForbiddenError` | 403 |
 | `NotFoundError` | 404 |
 | `InvalidInputError` | 400 |
 | `ExternalServiceError` | 502 |
@@ -240,13 +251,53 @@ Converts exceptions raised by the endpoint into responses with body `{"error": "
 | Unexpected exception | 500, generic message; traceback in the log, never in the response |
 | Request validation (FastAPI) | 422 |
 
-To add an error type: subclass `AppError` and add it to `_STATUS_CODES` in `decorator.py`.
+To add an error type: subclass `AppError` and add it to `_STATUS_CODES` in `error_handler.py`.
 
 ### @audit_log
 
-Records every call in the `audit_logs` collection: `action` (function name), `endpoint` (request path), `method`, `status` (`success`/`error`), `duration_ms`, `timestamp` (UTC), `metadata` (the dict passed to the decorator, plus `error` on failure).
+Records every call in the `audit_logs` collection: `action` (function name), `endpoint` (request path), `method`, `status` (`success`/`error`), `duration_ms`, `timestamp` (UTC), `user_id` (with `@require_auth`), `metadata` (the dict passed to the decorator, plus `error` on failure).
 
-Method and path are read from the request: the decorator adds a hidden `Request` parameter to the endpoint signature, so the endpoint must not declare one for it. A failure while writing the log is logged and never affects the response.
+Method and path are read from the request, which the decorator gets through a hidden parameter added to the endpoint signature. A failure while writing the log is logged and never affects the response.
+
+### @require_auth
+
+```python
+@router.get("/me", response_model=UserResponse, status_code=status.HTTP_200_OK)
+@handle_errors
+@audit_log(metadata={"service": "users"})
+@require_auth(roles=["admin", "editor"])    # any of these roles; require_auth() = any authenticated user
+async def get_me(current_user: AuthUser) -> UserResponse:
+    """Current user profile."""
+    return await user_service.get_profile(current_user)
+```
+
+- Reads `Authorization: Bearer <token>` and resolves it with `auth_service.authenticate()`: missing or invalid token → 401, none of the required roles → 403.
+- Declare `current_user: AuthUser` (from `app.schemas.auth`) only when the endpoint needs the user: the decorator fills it and hides it from the API. Pass it to the service as a normal argument.
+- Swagger shows a lock and the **Authorize** button on protected endpoints.
+- The user id ends up in the audit log, rejected (403) calls included.
+
+## Authentication
+
+The structure is fixed: the only thing to implement is **`AuthService._verify_token()`** in [auth_service.py](app/services/auth_service.py), which turns a token into `AuthUser(id, roles)` or raises `UnauthorizedError`. Until it is implemented every real token is rejected (401).
+
+It is a service, so it can verify the token through an integration client (Firebase, any JWT/OIDC provider) and load roles through a repository. Provider-specific logic never goes into `@require_auth`.
+
+### Mock tokens (local testing)
+
+With `AUTH_MOCK_ENABLED=true` the API also accepts mock bearer tokens, so protected endpoints can be tested before the real implementation exists:
+
+| Token | User | Roles |
+|-------|------|-------|
+| `mock:alice` | `alice` | none |
+| `mock:alice:admin` | `alice` | `admin` |
+| `mock:bob:admin,editor` | `bob` | `admin`, `editor` |
+
+```bash
+curl -H "Authorization: Bearer mock:bob:admin" \
+  "http://localhost:5008/api/v1/audit-logs?start_date=2026-01-01&end_date=2026-12-31"
+```
+
+In Swagger click **Authorize** and paste the token without `Bearer`. The flag is off by default and logs a warning at startup: never enable it in production.
 
 ## Logging
 
@@ -546,7 +597,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Query, status
 
-from app.core.decorator import audit_log, handle_errors
+from app.decorators import audit_log, handle_errors
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services.product_service import product_service
 
@@ -600,7 +651,7 @@ async def delete_product(product_id: str) -> None:
 - `prefix` and `tags` always set; collection routes use `""`, not `"/"`.
 - Always `response_model`, explicit `status.HTTP_*`, return type, docstring (shown in Swagger).
 - Query params with `Query()` and a description; paginated lists take `limit` and `skip`.
-- **Mandatory decorators**: `@router.<method>` → `@handle_errors` → `@audit_log(metadata={"service": "<feature>"})` → `async def`.
+- **Mandatory decorators**: `@router.<method>` → `@handle_errors` → `@audit_log(metadata={"service": "<feature>"})` → `async def`. Protected endpoints add `@require_auth(roles=[...])` right before `async def`.
 - No try/except and no logic: the router only calls the service.
 
 ### 6. Register — `app/api/v1/__init__.py`
@@ -661,7 +712,7 @@ docker-compose down [-v]        # stop [and remove volumes]
 - [ ] `app/schemas/{feature}.py`: `Create`, `Update` (if needed), `Response`
 - [ ] `app/repositories/{feature}_repository.py`: extends `EntityRepository`, domain methods, singleton
 - [ ] `app/services/{feature}_service.py`: uses only public repository methods, raises `AppError` subclasses, singleton
-- [ ] `app/api/v1/{feature}_router.py`: schemas only, `@handle_errors` + `@audit_log`, `response_model` + `status_code`
+- [ ] `app/api/v1/{feature}_router.py`: schemas only, `@handle_errors` + `@audit_log` (+ `@require_auth` if protected), `response_model` + `status_code`
 - [ ] Router registered in `app/api/v1/__init__.py`
 - [ ] `pytest` passes
 
@@ -672,7 +723,7 @@ docker-compose down [-v]        # stop [and remove volumes]
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/health/check` | API uptime and database reachability |
-| GET | `/api/v1/audit-logs` | Audit logs in a date range, newest first |
+| GET | `/api/v1/audit-logs` | Audit logs in a date range, newest first. Requires role `admin` |
 
 `/audit-logs` query parameters: `start_date`, `end_date` (`YYYY-MM-DD`, inclusive, UTC), `limit` (1-1000, default 100), `skip` (default 0).
 

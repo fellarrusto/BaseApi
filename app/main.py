@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,10 +11,13 @@ from app.db.database import db_connect, db_disconnect
 from app.integrations.clients import integrations_connect, integrations_disconnect
 
 setup_logging(settings.LOG_LEVEL)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.AUTH_MOCK_ENABLED:
+        logger.warning("AUTH_MOCK_ENABLED: mock bearer tokens are accepted, never use it in production")
     await db_connect()
     await integrations_connect()
     yield

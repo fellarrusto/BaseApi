@@ -17,6 +17,7 @@ class AuditLogService:
         method: str,
         status: str,
         duration_ms: float,
+        user_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Persist one audit entry for an endpoint call."""
@@ -26,6 +27,7 @@ class AuditLogService:
             method=method,
             status=status,
             duration_ms=duration_ms,
+            user_id=user_id,
             metadata=metadata or {}
         ))
 

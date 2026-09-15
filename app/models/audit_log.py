@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,4 +17,5 @@ class AuditLogInDB(BaseModel):
     method: str        # e.g. "GET"
     status: str        # "success" | "error"
     duration_ms: float
+    user_id: Optional[str] = None  # set when the endpoint uses @require_auth
     metadata: Dict[str, Any] = Field(default_factory=dict)  # from @audit_log, plus "error" on failure

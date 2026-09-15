@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Browser origins allowed to call the API, as a JSON list. Empty = CORS disabled
     CORS_ORIGINS: List[str] = []
 
+    # Accept "mock:<user_id>:<role1>,<role2>" bearer tokens. Local testing only
+    AUTH_MOCK_ENABLED: bool = False
+
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"
     MONGO_DB: str = "base_api_db"

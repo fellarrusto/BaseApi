@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
@@ -13,4 +13,5 @@ class AuditLogResponse(BaseModel):
     method: str
     status: str
     duration_ms: float
+    user_id: Optional[str]
     metadata: Dict[str, Any]

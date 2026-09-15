@@ -24,11 +24,20 @@ FORBIDDEN_IMPORTS = {
     "integrations": ["app.api", "app.services", "app.repositories", "app.db", "fastapi", *DRIVERS],
     "schemas": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.models", *DRIVERS],
     "models": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.schemas"],
-    "core": ["app.api", "app.repositories", "app.db", "app.integrations", *DRIVERS, *HTTP_CLIENTS],
+    "decorators": [
+        "app.api", "app.repositories", "app.db", "app.integrations", "app.models",
+        *DRIVERS, *HTTP_CLIENTS,
+    ],
+    "core": [
+        "app.api", "app.decorators", "app.services", "app.repositories", "app.db", "app.integrations",
+        "fastapi", *DRIVERS, *HTTP_CLIENTS,
+    ],
 }
 
 # Decorators every endpoint must have, right under the @router.<method>(...) line
 ROUTE_DECORATORS = ["handle_errors", "audit_log"]
+# Optional decorator: when used, it must come right after ROUTE_DECORATORS
+AUTH_DECORATOR = "require_auth"
 
 
 def _imported_modules(tree: ast.AST) -> Iterator[str]:
@@ -104,9 +113,11 @@ def test_endpoints_use_mandatory_decorators() -> None:
             if not _is_route_decorator(node.decorator_list[0]):
                 continue
             names = [_decorator_name(d) for d in node.decorator_list[1:]]
-            if names[:len(ROUTE_DECORATORS)] != ROUTE_DECORATORS:
+            mandatory_ok = names[:len(ROUTE_DECORATORS)] == ROUTE_DECORATORS
+            auth_ok = AUTH_DECORATOR not in names or names.index(AUTH_DECORATOR) == len(ROUTE_DECORATORS)
+            if not (mandatory_ok and auth_ok):
                 violations.append(f"{path.relative_to(APP_DIR.parent)}:{node.lineno}: {node.name}")
     assert not violations, (
-        "Endpoints must be decorated with @router.<method>, @handle_errors, @audit_log (in this order):\n"
-        + "\n".join(violations)
+        "Endpoints must be decorated with @router.<method>, @handle_errors, @audit_log "
+        "and optionally @require_auth (in this order):\n" + "\n".join(violations)
     )

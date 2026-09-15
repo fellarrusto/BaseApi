@@ -1,6 +1,6 @@
 from fastapi import APIRouter, status
 
-from app.core.decorator import audit_log, handle_errors
+from app.decorators import audit_log, handle_errors
 from app.schemas.health import HealthCheckResponse
 from app.services.health_service import health_service
 

@@ -3,7 +3,7 @@ from typing import List
 
 from fastapi import APIRouter, Query, status
 
-from app.core.decorator import audit_log, handle_errors
+from app.decorators import audit_log, handle_errors, require_auth
 from app.schemas.audit_log import AuditLogResponse
 from app.services.audit_log_service import audit_log_service
 
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/audit-logs", tags=["audit-logs"])
 )
 @handle_errors
 @audit_log(metadata={"service": "audit-logs"})
+@require_auth(roles=["admin"])
 async def get_audit_logs(
     start_date: date = Query(..., description="Start date, inclusive (YYYY-MM-DD)"),
     end_date: date = Query(..., description="End date, inclusive (YYYY-MM-DD)"),
