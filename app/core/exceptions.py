@@ -28,5 +28,9 @@ class ExternalServiceError(AppError):
     """An external integration failed or is not configured (502)."""
 
 
+class ServiceUnavailableError(AppError):
+    """A required dependency (e.g. the database) is unreachable (503)."""
+
+
 class JobCancelledError(Exception):
     """Raised inside a job handler when cancellation was requested (worker only, not HTTP)."""

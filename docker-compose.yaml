@@ -11,7 +11,6 @@ services:
     environment:
       - MONGODB_URI=mongodb://base-mongo:27017
       - MONGO_DB=${MONGO_DB:-base_api_db}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CORS_ORIGINS=${CORS_ORIGINS:-[]}
       - AUTH_MOCK_ENABLED=${AUTH_MOCK_ENABLED:-false}
@@ -32,7 +31,6 @@ services:
     environment:
       - MONGODB_URI=mongodb://base-mongo:27017
       - MONGO_DB=${MONGO_DB:-base_api_db}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
     depends_on:

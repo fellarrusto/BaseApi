@@ -16,9 +16,10 @@ class JobRunner:
     """
     Worker loop: claims due jobs from the database and runs their handlers.
 
-    Up to `concurrency` jobs run at once. A running job renews its lock;
-    jobs whose lock expired (crashed worker) go back to pending and resume
-    from their last checkpoint.
+    Up to `concurrency` jobs run at once. A running job renews its lock: if
+    the job is no longer owned by this worker, its handler is stopped. Jobs
+    whose lock expired (crashed worker) go back to pending and resume from
+    their last checkpoint.
     """
 
     def __init__(self, worker_id: str, concurrency: int, poll_seconds: float, lock_seconds: float):
@@ -59,6 +60,9 @@ class JobRunner:
         name = f"{job.domain}.{job.type}"
         definition = get_job_definition(job.domain, job.type)
 
+        if job.cancel_requested:
+            await self._safely(job_service.cancel_running(job_id, self.worker_id), "cancel job")
+            return
         if definition is None:
             await self._safely(
                 job_service.fail(job_id, self.worker_id, f"No handler registered for {name}", 1, 1), "fail job"
@@ -70,9 +74,17 @@ class JobRunner:
 
         logger.info("Job %s (%s) started, attempt %d", job_id, name, job.attempts)
         ctx = JobContext(job_id, self.worker_id, job.attempts, job.state)
-        heartbeat = asyncio.create_task(self._keep_lock(job_id))
+        handler = asyncio.create_task(
+            asyncio.wait_for(definition.handler(job.payload, ctx), definition.timeout_seconds)
+        )
+        heartbeat = asyncio.create_task(self._keep_lock(job_id, handler))
         try:
-            result = await asyncio.wait_for(definition.handler(job.payload, ctx), definition.timeout_seconds)
+            result = await handler
+        except asyncio.CancelledError:
+            if not self._lock_lost(heartbeat):
+                raise
+            # Another worker owns the job now: stop without touching it
+            logger.warning("Job %s (%s) is no longer owned by this worker: handler stopped", job_id, name)
         except JobCancelledError:
             logger.info("Job %s (%s) cancelled", job_id, name)
             await self._safely(job_service.cancel_running(job_id, self.worker_id), "cancel job")
@@ -94,10 +106,20 @@ class JobRunner:
             "fail job"
         )
 
-    async def _keep_lock(self, job_id: str) -> None:
+    async def _keep_lock(self, job_id: str, handler: asyncio.Task) -> bool:
+        """Renew the lock while the handler runs. Returns True after stopping a handler that lost its job."""
         while True:
             await asyncio.sleep(self.lock_seconds / 3)
-            await self._safely(job_service.extend_lock(job_id, self.worker_id, self.lock_seconds), "extend lock")
+            renewed = await self._safely(
+                job_service.extend_lock(job_id, self.worker_id, self.lock_seconds), "extend lock"
+            )
+            if renewed is False:  # None means a database error: keep going and retry
+                handler.cancel()
+                return True
+
+    @staticmethod
+    def _lock_lost(heartbeat: asyncio.Task) -> bool:
+        return heartbeat.done() and not heartbeat.cancelled() and heartbeat.result() is True
 
     async def _sleep(self, stop: asyncio.Event) -> None:
         try:

@@ -1,5 +1,18 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+
+@dataclass
+class Index:
+    """
+    Index declared by an entity repository, created at API startup.
+
+    `fields` is [(name, 1 | -1)]. `expire_after_seconds` deletes documents
+    that many seconds after the date in the (single) field: retention.
+    """
+    fields: List[Tuple[str, int]]
+    expire_after_seconds: Optional[int] = None
 
 
 class BaseStorage(ABC):
@@ -71,6 +84,15 @@ class BaseStorage(ABC):
         Atomically set fields on the first document matching `filters` and
         return it updated: two concurrent callers never get the same document.
         """
+        pass
+
+    @abstractmethod
+    async def ensure_index(
+        self,
+        fields: List[Tuple[str, int]],
+        expire_after_seconds: Optional[int] = None
+    ) -> None:
+        """Create the index if missing (idempotent). See Index for the arguments."""
         pass
 
     @abstractmethod

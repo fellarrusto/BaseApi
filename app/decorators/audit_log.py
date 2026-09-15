@@ -16,15 +16,18 @@ from app.services.audit_log_service import audit_log_service
 logger = logging.getLogger(__name__)
 
 
-def audit_log(metadata: Optional[Dict[str, Any]] = None) -> Callable:
+def audit_log(metadata: Optional[Dict[str, Any]] = None, enabled: bool = True) -> Callable:
     """
     Record every call of an endpoint in the audit_logs collection.
 
     Method and path come from the request, the user from @require_auth
     (when used). A failure while writing the log is logged and never
-    affects the response.
+    affects the response. `enabled=False` records nothing: use it only for
+    very frequent technical calls such as health probes.
     """
     def decorator(func: Callable) -> Callable:
+        if not enabled:
+            return func
         request_name, forward_request = request_parameter(func)
 
         @wraps(func)

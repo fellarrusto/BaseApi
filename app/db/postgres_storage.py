@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import uuid
 from datetime import date
@@ -7,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 
 from app.db.base_storage import BaseStorage
+
+logger = logging.getLogger(__name__)
 
 # Mongo-style operators supported in filters
 _OPERATORS = {"$gt": ">", "$gte": ">=", "$lt": "<", "$lte": "<=", "$ne": "<>"}
@@ -215,6 +218,21 @@ class PostgresStorage(BaseStorage):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, *params)
         return self._row_to_doc(row) if row else None
+
+    async def ensure_index(
+        self,
+        fields: List[Tuple[str, int]],
+        expire_after_seconds: Optional[int] = None
+    ) -> None:
+        await self._ensure_table()
+        names = [_check_identifier(name) for name, _ in fields]
+        index_name = _check_identifier(f"{self.table}_{'_'.join(names)}_idx")
+        columns = ", ".join(self._column(name) for name in names)
+        async with self.pool.acquire() as conn:
+            await conn.execute(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{self.table}" ({columns})')
+        if expire_after_seconds is not None:
+            # No native TTL: schedule a job that deletes old rows if retention is needed
+            logger.warning("PostgresStorage has no automatic expiry: old rows in %s are kept", self.table)
 
     async def delete_one(self, id: str) -> bool:
         await self._ensure_table()

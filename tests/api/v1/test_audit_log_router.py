@@ -8,19 +8,20 @@ def today() -> str:
 
 
 async def test_get_audit_logs_returns_calls_in_range(client, auth):
-    await client.get("/api/v1/health/check")
+    await client.post("/api/v1/timers", params={"seconds": 5}, headers=auth("alice"))
 
     response = await client.get(URL, params={"start_date": today(), "end_date": today()}, headers=auth("root", "admin"))
 
     assert response.status_code == 200
-    health_logs = [log for log in response.json() if log["action"] == "health_check"]
-    assert len(health_logs) == 1
-    assert health_logs[0]["endpoint"] == "/api/v1/health/check"
-    assert health_logs[0]["status"] == "success"
+    timer_logs = [log for log in response.json() if log["action"] == "start_timer"]
+    assert len(timer_logs) == 1
+    assert timer_logs[0]["endpoint"] == "/api/v1/timers"
+    assert timer_logs[0]["status"] == "success"
+    assert timer_logs[0]["user_id"] == "alice"
 
 
 async def test_get_audit_logs_outside_range_is_empty(client, auth):
-    await client.get("/api/v1/health/check")
+    await client.post("/api/v1/timers", params={"seconds": 5}, headers=auth("alice"))
 
     response = await client.get(URL, params={"start_date": "2000-01-01", "end_date": "2000-01-02"}, headers=auth("root", "admin"))
 

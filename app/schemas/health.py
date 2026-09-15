@@ -1,9 +1,14 @@
 from pydantic import BaseModel
 
 
-class HealthCheckResponse(BaseModel):
-    """API response model for the health check."""
-    status: str          # "healthy" | "degraded"
+class LivenessResponse(BaseModel):
+    """The API process is running."""
+    status: str          # "alive"
     version: str
     uptime_seconds: float
-    database: str        # "up" | "down"
+
+
+class ReadinessResponse(BaseModel):
+    """The API can serve requests: its dependencies are reachable."""
+    status: str          # "ready"
+    database: str        # "up"

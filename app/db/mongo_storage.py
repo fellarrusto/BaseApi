@@ -79,6 +79,14 @@ class MongoStorage(BaseStorage):
             return_document=ReturnDocument.AFTER
         )
 
+    async def ensure_index(
+        self,
+        fields: List[Tuple[str, int]],
+        expire_after_seconds: Optional[int] = None
+    ) -> None:
+        options = {} if expire_after_seconds is None else {"expireAfterSeconds": expire_after_seconds}
+        await self.collection.create_index(fields, **options)
+
     async def delete_one(self, id: str) -> bool:
         if not ObjectId.is_valid(id):
             return False
