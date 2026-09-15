@@ -26,3 +26,7 @@ class InvalidInputError(AppError):
 
 class ExternalServiceError(AppError):
     """An external integration failed or is not configured (502)."""
+
+
+class JobCancelledError(Exception):
+    """Raised inside a job handler when cancellation was requested (worker only, not HTTP)."""

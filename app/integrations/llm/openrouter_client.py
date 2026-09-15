@@ -15,7 +15,7 @@ class OpenRouterClient(BaseLLMClient):
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
 
-    async def complete(
+    async def invoke(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,

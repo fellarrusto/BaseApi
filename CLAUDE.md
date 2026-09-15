@@ -12,7 +12,7 @@ Modular template for REST APIs built with FastAPI on a strict layered architectu
 | PyMongo (async API) | 4.18 | MongoDB driver |
 | PostgreSQL + asyncpg | - | Alternative backend (reference example) |
 | httpx | 0.28 | HTTP client for external integrations |
-| pytest | 9.1 | Architecture tests |
+| pytest + pytest-asyncio | 9.1 / 1.4 | Endpoint and architecture tests |
 | Docker | - | Containerization |
 
 Versions are pinned in `requirements.txt` / `requirements-dev.txt`.
@@ -30,7 +30,7 @@ docker-compose up -d
 - Swagger UI: `http://localhost:${API_PORT}/docs`
 - Mongo Express: `http://localhost:8081` (admin/admin)
 
-Architecture tests (no database needed):
+Tests (no database needed):
 
 ```bash
 pip install -r requirements-dev.txt
@@ -62,6 +62,7 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 | **Storage** | `app/db` | Driver code behind `BaseStorage` (dicts in/out) | Anything entity-specific |
 | **Integration** | `app/integrations` | Connectors to external services (LLM, APIs) | Business logic, data access |
 | **Decorators** | `app/decorators` | Endpoint cross-cutting concerns: errors, audit, auth | Business logic, data access |
+| **Jobs** | `app/jobs` | Background job handlers (`@job`) and the worker runner | Data access, HTTP (handlers call services only) |
 
 **Rules you must never break:**
 
@@ -74,6 +75,7 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 7. Models and schemas are pure data structures.
 8. Skipping a layer is forbidden, even for "simple" endpoints.
 9. Every endpoint has `@handle_errors` and `@audit_log`, in this order; protected endpoints add `@require_auth` right after them (see [Decorators](#decorators)).
+10. Work that does not fit in a request runs as a background job: the endpoint enqueues it through a service, the handler in `app/jobs` calls services only (see [Background Jobs](#background-jobs)).
 
 **These rules are enforced by [tests/test_architecture.py](tests/test_architecture.py). Run `pytest` after every change. If it fails, fix the code, never the test.**
 
@@ -85,7 +87,9 @@ app/
 │   └── v1/
 │       ├── __init__.py        # api_router: registers every v1 router
 │       ├── health_router.py
-│       └── audit_log_router.py
+│       ├── audit_log_router.py
+│       ├── job_router.py      # GET /jobs, GET /jobs/{id}, POST /jobs/{id}/cancel
+│       └── timer_router.py    # demo: POST /timers starts a job
 ├── core/
 │   ├── config.py              # Settings (env vars)
 │   ├── exceptions.py          # AppError and subclasses (400, 401, 403, 404, 502)
@@ -106,25 +110,41 @@ app/
 │   └── llm/
 │       ├── base_llm_client.py
 │       └── openrouter_client.py
+├── jobs/                      # Background jobs (run by the worker)
+│   ├── __init__.py            # imports every job module so handlers get registered
+│   ├── registry.py            # @job decorator
+│   ├── context.py             # JobContext: progress, checkpoint, cancellation
+│   ├── runner.py              # worker loop: claim, run, retry, recover
+│   └── timer_job.py           # demo handler
 ├── models/                    # Persistence models ({Feature}InDB)
 │   ├── base.py                # PyObjectId, utc_now
-│   └── audit_log.py
+│   ├── audit_log.py
+│   └── job.py                 # JobInDB, JobStatus
 ├── repositories/              # Entity repositories
 │   ├── entity_repository.py   # Generic typed base class
 │   ├── audit_log_repository.py
-│   └── health_repository.py
+│   ├── health_repository.py
+│   └── job_repository.py
 ├── schemas/                   # API contract (Create/Update/Response)
 │   ├── audit_log.py
 │   ├── auth.py                # AuthUser
 │   ├── error.py
-│   └── health.py
+│   ├── health.py
+│   └── job.py                 # JobResponse
 ├── services/
 │   ├── audit_log_service.py
 │   ├── auth_service.py        # Token → AuthUser: implement _verify_token()
-│   └── health_service.py
-└── main.py                    # App assembly: logging, lifespan, CORS, routers
+│   ├── health_service.py
+│   ├── job_service.py         # enqueue/get/cancel (API) + claim/retry (worker)
+│   └── timer_service.py
+├── main.py                    # API entry point: logging, lifespan, CORS, routers
+└── worker.py                  # Worker entry point: python -m app.worker
 tests/
-└── test_architecture.py       # Layer boundary checks
+├── conftest.py                # Fixtures: client, auth, in-memory storage, fake_llm
+├── memory_storage.py          # In-memory BaseStorage
+├── fakes.py                   # FakeLLMClient
+├── test_architecture.py       # Layers, decorators, every endpoint tested
+└── api/v1/test_*_router.py    # One test file per router
 ```
 
 ---
@@ -143,7 +163,7 @@ One repository per entity. It extends `EntityRepository[ModelT]` ([entity_reposi
 | `create(entity)` | public | Insert, returns the entity |
 | `update(id, fields)` | public | Set fields, `False` if the entity does not exist |
 | `delete(id)` | public | `False` if the entity does not exist |
-| `_find_one(filters)`, `_find_many(filters, limit, skip, sort)`, `_count(filters)`, `_exists(filters)` | protected | Building blocks for domain methods, used **only inside the repository** |
+| `_find_one(filters)`, `_find_many(filters, limit, skip, sort)`, `_count(filters)`, `_exists(filters)`, `_update(id, fields, where)`, `_update_many(filters, fields)`, `_claim_one(filters, fields, sort)` | protected | Building blocks for domain methods, used **only inside the repository** |
 
 ```python
 class AuditLogRepository(EntityRepository[AuditLogInDB]):
@@ -180,8 +200,9 @@ class BaseStorage(ABC):
     async def exists(self, filters: Dict[str, Any]) -> bool: ...
     async def insert_one(self, data: Dict[str, Any]) -> str: ...
     async def insert_many(self, data: List[Dict[str, Any]]) -> List[str]: ...
-    async def update_one(self, id: str, data: Dict[str, Any]) -> bool: ...    # True if the document exists
+    async def update_one(self, id: str, data, where=None) -> bool: ...        # True if it exists and matches `where`
     async def update_many(self, filters, data) -> int: ...                   # matched documents
+    async def claim_one(self, filters, data, sort=None) -> Optional[Dict]: ... # atomic update + return (job queue)
     async def delete_one(self, id: str) -> bool: ...
     async def delete_many(self, filters: Dict[str, Any]) -> int: ...
 ```
@@ -212,7 +233,7 @@ class SummaryService:
     """Business logic for text summaries."""
 
     async def summarize(self, text: str) -> str:
-        result = await get_llm_client().complete(
+        result = await get_llm_client().invoke(
             [{"role": "user", "content": f"Summarize:\n{text}"}]
         )
         return result["content"]
@@ -312,6 +333,92 @@ logger = logging.getLogger(__name__)
 ```
 
 Never use `print`, and never log secrets (API keys, tokens, passwords, full LLM prompts with user data).
+
+## Background Jobs
+
+Long work runs in the **worker** (`python -m app.worker`, service `base-worker` in docker-compose), a separate process that uses the `jobs` collection as its queue. No extra infrastructure: scale by starting more workers.
+
+**Flow:** endpoint → service → `job_service.enqueue(domain, job_type, payload, user_id)` → 202 with the job → the worker claims it atomically and runs its handler → the client follows `GET /api/v1/jobs/{id}`.
+
+A job has a `domain` (e.g. `pdf`) and a `type` (e.g. `ingestion`): `GET /jobs?domain=pdf&status=running` lists them. Users see their own jobs, `admin` sees all. `resource_id` can link a job to the entity it works on.
+
+### Adding a job
+
+1. Handler in `app/jobs/{name}_job.py`, then import the module in [app/jobs/__init__.py](app/jobs/__init__.py):
+
+```python
+@job(domain="pdf", type="ingestion", max_attempts=3, timeout_seconds=1800)
+async def ingest_pdf(payload: Dict[str, Any], ctx: JobContext) -> Dict[str, Any]:
+    """Extract and index a PDF."""
+    pages = await pdf_service.extract_pages(payload["document_id"])
+    for i, page in enumerate(pages, start=1):
+        await ctx.check_cancelled()                       # stop here if cancelled
+        await pdf_service.index_page(payload["document_id"], page)
+        await ctx.progress(i / len(pages) * 100, f"{i}/{len(pages)} pages")
+    return {"pages": len(pages)}                          # saved as job result
+```
+
+2. Enqueue it from the feature service (never a generic "create job" endpoint):
+
+```python
+async def request_ingestion(self, document_id: str, user: AuthUser) -> JobResponse:
+    return await job_service.enqueue("pdf", "ingestion", {"document_id": document_id}, user_id=user.id, resource_id=document_id)
+```
+
+3. The endpoint returns `JobResponse` with `status_code=status.HTTP_202_ACCEPTED`. See the demo: [timer_router.py](app/api/v1/timer_router.py) → [timer_service.py](app/services/timer_service.py) → [timer_job.py](app/jobs/timer_job.py).
+
+### Handler rules
+
+- Call **services only** (never repositories, `app.db` or integrations directly). Payload and result are small JSON dicts: store large outputs in their own entity.
+- Call `ctx.check_cancelled()` between steps: cancellation is cooperative.
+- For long workflows save checkpoints with `ctx.save_state({...})` and resume from `ctx.state`: after a crash the job restarts from there.
+- Handlers may run more than once (retries, crashes): make each step safe to repeat.
+
+### What the worker handles
+
+| Situation | Behavior |
+|-----------|----------|
+| Exception | Retry with backoff (5s, 10s, 20s… max 5 min) until `max_attempts`, then `failed` with `error` |
+| Timeout (`timeout_seconds`) | Counted as a failed attempt |
+| Cancel on a pending job | `cancelled` immediately |
+| Cancel on a running job | `cancel_requested`, the handler stops at the next `check_cancelled()` |
+| Worker crash | The job lock (`WORKER_LOCK_SECONDS`) expires, the job goes back to `pending` and resumes from its checkpoint |
+| Unknown `domain`/`type` | `failed` ("No handler registered") |
+| SIGTERM | No new jobs are claimed; running ones finish (or are recovered after the lock expires) |
+
+Statuses: `pending` → `running` → `succeeded` | `failed` | `cancelled`.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests never touch a real database or network. [tests/conftest.py](tests/conftest.py) gives every test a fresh in-memory storage and enables mock auth tokens.
+
+| Fixture | Use |
+|---------|-----|
+| `client` | `httpx.AsyncClient` calling the app in-process: `await client.get("/api/v1/...")` |
+| `auth(user_id, *roles)` | Mock bearer header: `headers=auth("alice", "admin")` |
+| `storage` | `{collection: MemoryStorage}` behind every repository (automatic) |
+| `fake_llm` | `FakeLLMClient` recording calls in `fake_llm.calls` |
+
+### Endpoint test rules
+
+1. **One file per router**, same path: `app/api/v1/product_router.py` → `tests/api/v1/test_product_router.py`.
+2. **Test through HTTP** with `client`, never by calling services directly. Use repositories only to arrange data the API cannot create (e.g. a job already running).
+3. **No real database, network or LLM**: patch integrations with fakes where the service imports the factory, e.g. `monkeypatch.setattr("app.services.summary_service.get_llm_client", lambda: fake_llm)`.
+4. **Every endpoint covers**, when applicable:
+   - success: status code and the relevant body fields
+   - invalid input: 422
+   - protected endpoints: 401 without token, 403 without the role
+   - business errors: 404, 400, ...
+5. **Names**: `test_<endpoint_function>_<scenario>`, e.g. `test_get_job_of_another_user_is_not_found`.
+6. **Independent tests**: each test arranges what it needs; no shared state, no order.
+7. Plain `async def` tests (no decorator needed), laid out as arrange / act / assert.
+
+The architecture test fails if a router has no test file or an endpoint has no `test_<endpoint>_*` test. Examples: [tests/api/v1](tests/api/v1).
 
 ---
 
@@ -662,6 +769,91 @@ from app.api.v1 import audit_log_router, health_router, product_router
 api_router.include_router(product_router.router)
 ```
 
+### 7. Tests — `tests/api/v1/test_product_router.py`
+
+```python
+URL = "/api/v1/products"
+PEN = {"name": "Pen", "price": 2.5, "category": "office"}
+
+
+async def create_product(client, **overrides) -> dict:
+    response = await client.post(URL, json={**PEN, **overrides})
+    assert response.status_code == 201
+    return response.json()
+
+
+async def test_create_product_returns_created_product(client):
+    response = await client.post(URL, json=PEN)
+
+    assert response.status_code == 201
+    assert response.json()["name"] == "Pen"
+
+
+async def test_create_product_duplicate_name_is_rejected(client):
+    await create_product(client)
+
+    response = await client.post(URL, json=PEN)
+
+    assert response.status_code == 400
+
+
+async def test_create_product_rejects_invalid_price(client):
+    response = await client.post(URL, json={**PEN, "price": -1})
+
+    assert response.status_code == 422
+
+
+async def test_get_product_returns_product(client):
+    product = await create_product(client)
+
+    response = await client.get(f"{URL}/{product['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == product
+
+
+async def test_get_product_unknown_id_is_not_found(client):
+    response = await client.get(f"{URL}/000000000000000000000000")
+
+    assert response.status_code == 404
+
+
+async def test_get_products_filters_by_category(client):
+    await create_product(client)
+    await create_product(client, name="Mug", category="kitchen")
+
+    response = await client.get(URL, params={"category": "kitchen"})
+
+    assert [p["name"] for p in response.json()] == ["Mug"]
+
+
+async def test_update_product_changes_only_sent_fields(client):
+    product = await create_product(client)
+
+    response = await client.patch(f"{URL}/{product['id']}", json={"price": 3})
+
+    assert response.status_code == 200
+    assert response.json()["price"] == 3
+    assert response.json()["name"] == "Pen"
+
+
+async def test_update_product_unknown_id_is_not_found(client):
+    response = await client.patch(f"{URL}/000000000000000000000000", json={"price": 3})
+
+    assert response.status_code == 404
+
+
+async def test_delete_product_removes_product(client):
+    product = await create_product(client)
+
+    response = await client.delete(f"{URL}/{product['id']}")
+
+    assert response.status_code == 204
+    assert (await client.get(f"{URL}/{product['id']}")).status_code == 404
+```
+
+Protected endpoints also get `..._requires_token` (401) and, with roles, `..._requires_<role>_role` (403) tests.
+
 ---
 
 ## Configuration
@@ -687,7 +879,7 @@ CORS_ORIGINS='["http://localhost:5173"]'
 
 ## Docker
 
-`docker-compose.yaml` is for development: it mounts the code and runs uvicorn with `--reload`. The `Dockerfile` alone builds a self-contained image (code copied, non-root user, no reload).
+`docker-compose.yaml` is for development: it mounts the code and runs uvicorn with `--reload`. `base-worker` runs the same image with `python -m app.worker` and does not auto-reload: restart it after changing jobs or services (`docker-compose restart base-worker`). The `Dockerfile` alone builds a self-contained image (code copied, non-root user, no reload).
 
 ```bash
 docker-compose up -d            # start
@@ -714,6 +906,7 @@ docker-compose down [-v]        # stop [and remove volumes]
 - [ ] `app/services/{feature}_service.py`: uses only public repository methods, raises `AppError` subclasses, singleton
 - [ ] `app/api/v1/{feature}_router.py`: schemas only, `@handle_errors` + `@audit_log` (+ `@require_auth` if protected), `response_model` + `status_code`
 - [ ] Router registered in `app/api/v1/__init__.py`
+- [ ] `tests/api/v1/test_{feature}_router.py`: every endpoint tested (success, 422, 401/403, business errors)
 - [ ] `pytest` passes
 
 ---
@@ -724,6 +917,10 @@ docker-compose down [-v]        # stop [and remove volumes]
 |--------|----------|-------------|
 | GET | `/api/v1/health/check` | API uptime and database reachability |
 | GET | `/api/v1/audit-logs` | Audit logs in a date range, newest first. Requires role `admin` |
+| GET | `/api/v1/jobs` | Your jobs (all for `admin`), filters `domain`, `type`, `status`, `limit`, `skip` |
+| GET | `/api/v1/jobs/{id}` | Job status, progress, result |
+| POST | `/api/v1/jobs/{id}/cancel` | Cancel a pending or running job |
+| POST | `/api/v1/timers?seconds=10` | Demo: start a timer job (202) |
 
 `/audit-logs` query parameters: `start_date`, `end_date` (`YYYY-MM-DD`, inclusive, UTC), `limit` (1-1000, default 100), `skip` (default 0).
 

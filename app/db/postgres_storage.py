@@ -75,9 +75,9 @@ class PostgresStorage(BaseStorage):
     def _param(self, value: Any) -> Any:
         return float(value) if self._is_number(value) else self._to_text(value)
 
-    def _build_where(self, filters: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    def _build_conditions(self, filters: Dict[str, Any], params: List[Any]) -> List[str]:
+        """SQL conditions for `filters`; their values are appended to `params`."""
         clauses: List[str] = []
-        params: List[Any] = []
         for key, value in filters.items():
             conditions = value.items() if isinstance(value, dict) else [("$eq", value)]
             for op, op_value in conditions:
@@ -91,8 +91,22 @@ class PostgresStorage(BaseStorage):
                 column = self._column(key, numeric=self._is_number(op_value))
                 params.append(self._param(op_value))
                 clauses.append(f"{column} {sql_op} ${len(params)}")
+        return clauses
+
+    def _build_where(self, filters: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        params: List[Any] = []
+        clauses = self._build_conditions(filters, params)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
+
+    def _order_by(self, sort: Optional[List[Tuple[str, int]]]) -> str:
+        if not sort:
+            return ""
+        parts = [
+            f"{self._column(key)} {'ASC' if direction >= 0 else 'DESC'}"
+            for key, direction in sort
+        ]
+        return " ORDER BY " + ", ".join(parts)
 
     @staticmethod
     def _row_to_doc(row: asyncpg.Record) -> Dict[str, Any]:
@@ -121,18 +135,9 @@ class PostgresStorage(BaseStorage):
     ) -> List[Dict[str, Any]]:
         await self._ensure_table()
         where, params = self._build_where(filters)
-
-        order = ""
-        if sort:
-            parts = [
-                f"{self._column(key)} {'ASC' if direction >= 0 else 'DESC'}"
-                for key, direction in sort
-            ]
-            order = " ORDER BY " + ", ".join(parts)
-
         params.extend([skip, limit])
         query = (
-            f'SELECT id, data FROM "{self.table}"{where}{order} '
+            f'SELECT id, data FROM "{self.table}"{where}{self._order_by(sort)} '
             f"OFFSET ${len(params) - 1} LIMIT ${len(params)}"
         )
         async with self.pool.acquire() as conn:
@@ -165,13 +170,19 @@ class PostgresStorage(BaseStorage):
     async def insert_many(self, data: List[Dict[str, Any]]) -> List[str]:
         return [await self.insert_one(doc) for doc in data]
 
-    async def update_one(self, id: str, data: Dict[str, Any]) -> bool:
+    async def update_one(
+        self,
+        id: str,
+        data: Dict[str, Any],
+        where: Optional[Dict[str, Any]] = None
+    ) -> bool:
         await self._ensure_table()
+        params: List[Any] = [id, json.dumps(data, default=_json_default)]
+        conditions = ["id = $1", *self._build_conditions(where or {}, params)]
         async with self.pool.acquire() as conn:
             result = await conn.execute(
-                f'UPDATE "{self.table}" SET data = data || $2::jsonb WHERE id = $1',
-                id,
-                json.dumps(data, default=_json_default)
+                f'UPDATE "{self.table}" SET data = data || $2::jsonb WHERE {" AND ".join(conditions)}',
+                *params
             )
         return self._affected_rows(result) > 0
 
@@ -185,6 +196,25 @@ class PostgresStorage(BaseStorage):
                 *params
             )
         return self._affected_rows(result)
+
+    async def claim_one(
+        self,
+        filters: Dict[str, Any],
+        data: Dict[str, Any],
+        sort: Optional[List[Tuple[str, int]]] = None
+    ) -> Optional[Dict[str, Any]]:
+        await self._ensure_table()
+        where, params = self._build_where(filters)
+        params.append(json.dumps(data, default=_json_default))
+        # SKIP LOCKED: concurrent claimers pick different rows instead of waiting
+        query = (
+            f'UPDATE "{self.table}" SET data = data || ${len(params)}::jsonb '
+            f'WHERE id = (SELECT id FROM "{self.table}"{where}{self._order_by(sort)} '
+            "LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id, data"
+        )
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+        return self._row_to_doc(row) if row else None
 
     async def delete_one(self, id: str) -> bool:
         await self._ensure_table()

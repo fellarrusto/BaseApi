@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # Accept "mock:<user_id>:<role1>,<role2>" bearer tokens. Local testing only
     AUTH_MOCK_ENABLED: bool = False
 
+    # Background jobs worker (python -m app.worker)
+    WORKER_CONCURRENCY: int = 4          # jobs running at the same time per worker
+    WORKER_POLL_SECONDS: float = 2.0     # wait between checks when the queue is empty
+    WORKER_LOCK_SECONDS: float = 60.0    # a job whose worker is silent this long is retried
+
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"
     MONGO_DB: str = "base_api_db"

@@ -8,28 +8,40 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 
 APP_DIR = Path(__file__).resolve().parent.parent / "app"
+TESTS_DIR = APP_DIR.parent / "tests"
 
 DRIVERS = ["pymongo", "motor", "bson", "asyncpg"]
 HTTP_CLIENTS = ["httpx", "requests", "aiohttp"]
 
 # layer folder -> import prefixes it must never use
 FORBIDDEN_IMPORTS = {
-    "api": ["app.db", "app.repositories", "app.models", "app.integrations", *DRIVERS, *HTTP_CLIENTS],
-    "services": ["app.db", "app.api", "fastapi", "starlette", *DRIVERS, *HTTP_CLIENTS],
+    "api": [
+        "app.db", "app.repositories", "app.models", "app.integrations", "app.jobs",
+        *DRIVERS, *HTTP_CLIENTS,
+    ],
+    "services": ["app.db", "app.api", "app.jobs", "fastapi", "starlette", *DRIVERS, *HTTP_CLIENTS],
     "repositories": [
         "app.db.mongo_storage", "app.db.postgres_storage",
-        "app.api", "app.services", "app.integrations", "app.schemas",
+        "app.api", "app.services", "app.integrations", "app.schemas", "app.jobs",
         "fastapi", *DRIVERS, *HTTP_CLIENTS,
     ],
-    "integrations": ["app.api", "app.services", "app.repositories", "app.db", "fastapi", *DRIVERS],
-    "schemas": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.models", *DRIVERS],
-    "models": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.schemas"],
+    # Job handlers are entry points like routers: they only call services
+    "jobs": [
+        "app.api", "app.decorators", "app.repositories", "app.db", "app.integrations",
+        "fastapi", *DRIVERS, *HTTP_CLIENTS,
+    ],
+    "integrations": ["app.api", "app.services", "app.repositories", "app.db", "app.jobs", "fastapi", *DRIVERS],
+    "schemas": [
+        "app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.models", "app.jobs",
+        *DRIVERS,
+    ],
+    "models": ["app.api", "app.services", "app.repositories", "app.db", "app.integrations", "app.schemas", "app.jobs"],
     "decorators": [
-        "app.api", "app.repositories", "app.db", "app.integrations", "app.models",
+        "app.api", "app.repositories", "app.db", "app.integrations", "app.models", "app.jobs",
         *DRIVERS, *HTTP_CLIENTS,
     ],
     "core": [
-        "app.api", "app.decorators", "app.services", "app.repositories", "app.db", "app.integrations",
+        "app.api", "app.decorators", "app.services", "app.repositories", "app.db", "app.integrations", "app.jobs",
         "fastapi", *DRIVERS, *HTTP_CLIENTS,
     ],
 }
@@ -121,3 +133,27 @@ def test_endpoints_use_mandatory_decorators() -> None:
         "Endpoints must be decorated with @router.<method>, @handle_errors, @audit_log "
         "and optionally @require_auth (in this order):\n" + "\n".join(violations)
     )
+
+
+def _function_names(tree: ast.AST) -> List[str]:
+    return [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def test_every_endpoint_has_tests() -> None:
+    # app/api/v1/x_router.py -> tests/api/v1/test_x_router.py with a test_<endpoint>_* per endpoint
+    violations: List[str] = []
+    for path in (APP_DIR / "api").rglob("*_router.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        endpoints = [
+            node.name for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.decorator_list and _is_route_decorator(node.decorator_list[0])
+        ]
+        test_path = TESTS_DIR / path.relative_to(APP_DIR).parent / f"test_{path.name}"
+        if not test_path.exists():
+            violations.append(f"{path.relative_to(APP_DIR.parent)}: missing {test_path.relative_to(APP_DIR.parent)}")
+            continue
+        test_names = _function_names(ast.parse(test_path.read_text(encoding="utf-8")))
+        for endpoint in endpoints:
+            if not any(name.startswith(f"test_{endpoint}_") for name in test_names):
+                violations.append(f"{test_path.relative_to(APP_DIR.parent)}: no test_{endpoint}_* test")
+    assert not violations, "Endpoints without tests (see Testing in CLAUDE.md):\n" + "\n".join(violations)

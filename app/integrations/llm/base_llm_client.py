@@ -12,7 +12,7 @@ class BaseLLMClient(ABC):
     """
 
     @abstractmethod
-    async def complete(
+    async def invoke(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,

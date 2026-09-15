@@ -66,5 +66,22 @@ class EntityRepository(Generic[ModelT]):
     async def _exists(self, filters: Dict[str, Any]) -> bool:
         return await self._storage.exists(filters)
 
+    async def _update(self, id: str, fields: Dict[str, Any], where: Optional[Dict[str, Any]] = None) -> bool:
+        """Set fields only if the entity also matches `where` (e.g. a status guard)."""
+        return await self._storage.update_one(id, fields, where)
+
+    async def _update_many(self, filters: Dict[str, Any], fields: Dict[str, Any]) -> int:
+        return await self._storage.update_many(filters, fields)
+
+    async def _claim_one(
+        self,
+        filters: Dict[str, Any],
+        fields: Dict[str, Any],
+        sort: Optional[List[Tuple[str, int]]] = None
+    ) -> Optional[ModelT]:
+        """Atomically update and return the first matching entity (safe with concurrent callers)."""
+        doc = await self._storage.claim_one(filters, fields, sort)
+        return self._to_model(doc) if doc else None
+
     def _to_model(self, doc: Dict[str, Any]) -> ModelT:
         return self.model.model_validate(doc)

@@ -7,9 +7,10 @@ Modular FastAPI boilerplate for REST APIs, built on a strict layered architectur
 - **FastAPI** with full async support and auto-generated Swagger docs
 - **Entity repositories** on top of a database-agnostic storage layer (MongoDB active, PostgreSQL provided as a reference example)
 - **Integrations layer** for external services, with an OpenRouter LLM connector
-- **Automatic audit logging** (middleware) and centralized error handling
-- **Architecture tests** that enforce the layer boundaries
-- **Docker-ready**: API, MongoDB and Mongo Express with a single command
+- **Route decorators** for error handling, audit logging and role-based authentication (pluggable, with mock tokens for local testing)
+- **Background jobs**: a worker process with a database-backed queue, progress, retries, cancellation and crash recovery
+- **Tests**: endpoint tests on in-memory storage (no database needed) and architecture tests that enforce the layer boundaries
+- **Docker-ready**: API, worker, MongoDB and Mongo Express with a single command
 
 ## Quick Start
 
@@ -26,7 +27,7 @@ docker-compose up -d
 | Swagger UI | http://localhost:5008/docs |
 | Mongo Express | http://localhost:8081 (admin/admin) |
 
-Run the architecture tests with `pip install -r requirements-dev.txt && pytest`.
+Run the tests with `pip install -r requirements-dev.txt && pytest`.
 
 ## Documentation
 
