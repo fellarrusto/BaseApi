@@ -1,5 +1,5 @@
 """
-Enforces the layer boundaries described in CLAUDE.md.
+Enforces the layer boundaries described in AGENTS.md.
 
 Static check (no app dependencies needed): run with `pytest`.
 """
@@ -96,7 +96,7 @@ def test_layers_respect_import_boundaries() -> None:
             for module in _imported_modules(tree):
                 if any(_matches(module, prefix) for prefix in forbidden):
                     violations.append(f"{path.relative_to(APP_DIR.parent)}: imports {module}")
-    assert not violations, "Layer boundary violations (see CLAUDE.md):\n" + "\n".join(sorted(set(violations)))
+    assert not violations, "Layer boundary violations (see AGENTS.md):\n" + "\n".join(sorted(set(violations)))
 
 
 def test_services_use_only_public_repository_methods() -> None:
@@ -156,4 +156,4 @@ def test_every_endpoint_has_tests() -> None:
         for endpoint in endpoints:
             if not any(name.startswith(f"test_{endpoint}_") for name in test_names):
                 violations.append(f"{test_path.relative_to(APP_DIR.parent)}: no test_{endpoint}_* test")
-    assert not violations, "Endpoints without tests (see Testing in CLAUDE.md):\n" + "\n".join(violations)
+    assert not violations, "Endpoints without tests (see Testing in AGENTS.md):\n" + "\n".join(violations)
