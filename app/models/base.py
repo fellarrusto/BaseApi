@@ -1,4 +1,12 @@
+from datetime import datetime, timezone
+
 from bson import ObjectId
+
+
+def utc_now() -> datetime:
+    """Timezone-aware UTC timestamp: use it as default_factory for datetimes."""
+    return datetime.now(timezone.utc)
+
 
 class PyObjectId(ObjectId):
     @classmethod

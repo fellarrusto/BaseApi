@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
-class BaseRepository(ABC):
-    """
-    Abstract data-access contract.
 
-    Services must depend on this interface only, never on a concrete
-    database driver. Documents are plain dicts; ids are strings.
+class BaseStorage(ABC):
+    """
+    Abstract, database-agnostic storage contract for one collection/table.
+
+    Only entity repositories (app/repositories) may use it. Documents are
+    plain dicts; ids are strings. Filters use Mongo-style syntax: equality
+    plus $gt, $gte, $lt, $lte, $ne, $in.
     """
 
     @abstractmethod
@@ -44,11 +46,31 @@ class BaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_one(self, id: str, data: Dict[str, Any]) -> bool:
+    async def update_one(
+        self,
+        id: str,
+        data: Dict[str, Any],
+        where: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Set the given fields if the document exists and matches `where`. Returns True if it matched."""
         pass
 
     @abstractmethod
     async def update_many(self, filters: Dict[str, Any], data: Dict[str, Any]) -> int:
+        """Set the given fields. Returns the number of matched documents."""
+        pass
+
+    @abstractmethod
+    async def claim_one(
+        self,
+        filters: Dict[str, Any],
+        data: Dict[str, Any],
+        sort: Optional[List[Tuple[str, int]]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Atomically set fields on the first document matching `filters` and
+        return it updated: two concurrent callers never get the same document.
+        """
         pass
 
     @abstractmethod

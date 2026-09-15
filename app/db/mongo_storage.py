@@ -1,11 +1,16 @@
 from typing import Any, Dict, List, Optional, Tuple
+
 from bson import ObjectId
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from app.db.base_repository import BaseRepository
+from pymongo import ReturnDocument
+from pymongo.asynchronous.database import AsyncDatabase
 
-class MongoRepository(BaseRepository):
+from app.db.base_storage import BaseStorage
 
-    def __init__(self, db: AsyncIOMotorDatabase, collection_name: str):
+
+class MongoStorage(BaseStorage):
+    """MongoDB implementation (PyMongo async API). Documents stored as-is."""
+
+    def __init__(self, db: AsyncDatabase, collection_name: str):
         self.collection = db[collection_name]
 
     async def find_one(self, id: str) -> Optional[Dict[str, Any]]:
@@ -42,18 +47,37 @@ class MongoRepository(BaseRepository):
         result = await self.collection.insert_many(data)
         return [str(inserted_id) for inserted_id in result.inserted_ids]
 
-    async def update_one(self, id: str, data: Dict[str, Any]) -> bool:
+    async def update_one(
+        self,
+        id: str,
+        data: Dict[str, Any],
+        where: Optional[Dict[str, Any]] = None
+    ) -> bool:
         if not ObjectId.is_valid(id):
             return False
         result = await self.collection.update_one(
-            {"_id": ObjectId(id)},
+            {"_id": ObjectId(id), **(where or {})},
             {"$set": data}
         )
-        return result.modified_count > 0
+        # matched, not modified: an update with identical values still succeeds
+        return result.matched_count > 0
 
     async def update_many(self, filters: Dict[str, Any], data: Dict[str, Any]) -> int:
         result = await self.collection.update_many(filters, {"$set": data})
-        return result.modified_count
+        return result.matched_count
+
+    async def claim_one(
+        self,
+        filters: Dict[str, Any],
+        data: Dict[str, Any],
+        sort: Optional[List[Tuple[str, int]]] = None
+    ) -> Optional[Dict[str, Any]]:
+        return await self.collection.find_one_and_update(
+            filters,
+            {"$set": data},
+            sort=sort,
+            return_document=ReturnDocument.AFTER
+        )
 
     async def delete_one(self, id: str) -> bool:
         if not ObjectId.is_valid(id):

@@ -2,19 +2,42 @@ services:
   base-api:
     build: .
     container_name: base-api
+    # Development: live code mount + auto-reload (the image alone runs without them)
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
-      - ./scripts:/scripts
     stop_signal: SIGTERM
     stop_grace_period: 30s
     environment:
-      - PYTHONUNBUFFERED=1
       - MONGODB_URI=mongodb://base-mongo:27017
       - MONGO_DB=${MONGO_DB:-base_api_db}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-[]}
+      - AUTH_MOCK_ENABLED=${AUTH_MOCK_ENABLED:-false}
     ports:
       - "${API_PORT:-5008}:8000"
     depends_on:
       - base-mongo
+
+  base-worker:
+    build: .
+    container_name: base-worker
+    # Runs background jobs; restart it after code changes (no auto-reload)
+    command: python -m app.worker
+    volumes:
+      - .:/app
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    environment:
+      - MONGODB_URI=mongodb://base-mongo:27017
+      - MONGO_DB=${MONGO_DB:-base_api_db}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
+    depends_on:
+      - base-mongo
+    restart: unless-stopped
 
   base-mongo:
     image: mongo:${MONGO_VERSION:-6}
