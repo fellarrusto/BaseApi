@@ -1,221 +1,302 @@
 # Base API - FastAPI Boilerplate
 
-Modular template for REST APIs built with FastAPI on a strict layered architecture (Router → Service → Repository). MongoDB is the default storage backend; PostgreSQL is supported through the same repository interface.
+Modular template for REST APIs built with FastAPI on a strict layered architecture (Router → Service → Repository → Storage). MongoDB is the default storage backend; PostgreSQL is supported through the same storage interface.
 
 ## Tech Stack
 
 | Technology | Version | Purpose |
 |------------|---------|---------|
-| FastAPI | ≥0.115.0 | Async web framework |
-| MongoDB | 6 | Default NoSQL database |
-| Motor | 3.3.2 | Async MongoDB driver |
-| PostgreSQL | - | Alternative backend (reference example, asyncpg) |
-| Pydantic | ≥2.5.0 | Data validation and settings |
+| FastAPI | 0.141 | Async web framework |
+| Pydantic / pydantic-settings | 2.13 / 2.15 | Validation and settings |
+| MongoDB | 6 | Default database |
+| PyMongo (async API) | 4.18 | MongoDB driver |
+| PostgreSQL + asyncpg | - | Alternative backend (reference example) |
+| httpx | 0.28 | HTTP client for external integrations |
+| pytest | 9.1 | Architecture tests |
 | Docker | - | Containerization |
+
+Versions are pinned in `requirements.txt` / `requirements-dev.txt`.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone and run
-git clone <repo-url>
-cd BaseApi
+cp .env.example .env    # optional: every value has a default
 docker-compose up -d
 ```
 
-**Available services:**
-- REST API: `http://localhost:${API_PORT}/api/v1` (e.g. `5008`)
-- Mongo Express: `http://localhost:8081` (admin/admin)
+- REST API: `http://localhost:${API_PORT}/api/v1` (default `5008`)
 - Swagger UI: `http://localhost:${API_PORT}/docs`
+- Mongo Express: `http://localhost:8081` (admin/admin)
+
+Architecture tests (no database needed):
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
 ---
 
 ## Architecture — MANDATORY Layered Pattern
 
-**Every feature MUST follow the Model / Router / Service / Repository pattern. No exceptions.**
-
-Request flow:
+**Every feature MUST follow the Schema / Model / Router / Service / Repository pattern. No exceptions.**
 
 ```
-Router (HTTP) → Service (business logic) → Repository (data access) → Database
-                     ↕
-                Models (Pydantic DTOs)
+                 Schemas (API contract)
+                         ↕
+Router (HTTP) → Service (business logic) → Repository (entity data access) → Storage (driver) → Database
+                         │                          ↕
+                         │                   Models (InDB)
+                         └──→ Integration (external APIs)
 ```
 
-Responsibilities — and hard boundaries:
-
-| Layer | Does | NEVER does |
-|-------|------|------------|
-| **Model** | Defines Pydantic schemas (`InDB`, `Response`, `Create`, `Update`) | Business logic, DB access |
-| **Router** | HTTP input/output validation, delegates to service | Business logic, DB access |
-| **Service** | Business logic, Pydantic ↔ dict conversion | Direct driver access (Motor/asyncpg), HTTP parsing |
-| **Repository** | Data access behind the `BaseRepository` interface | Business logic, HTTP concerns |
+| Layer | Folder | Does | NEVER does |
+|-------|--------|------|------------|
+| **Schema** | `app/schemas` | API contract: `Create`, `Update`, `Response` | Logic, persistence fields |
+| **Model** | `app/models` | Persistence shape: `{Feature}InDB` | Logic, API concerns |
+| **Router** | `app/api/v1` | HTTP input/output, calls its service | Business logic, data access, returning `InDB` models |
+| **Service** | `app/services` | Business logic, `InDB` → `Response` conversion | Storage/driver access, filters, `HTTPException` |
+| **Repository** | `app/repositories` | Typed data access for one entity, owns every query/filter | Business logic, HTTP, driver imports |
+| **Storage** | `app/db` | Driver code behind `BaseStorage` (dicts in/out) | Anything entity-specific |
+| **Integration** | `app/integrations` | Connectors to external services (LLM, APIs) | Business logic, data access |
 
 **Rules you must never break:**
 
-1. A router never queries the database — it only calls its service.
-2. A service never imports Motor, asyncpg, or `get_database()` — it only uses `BaseRepository` obtained via `get_repository()`.
-3. Database-specific code lives **only** inside a repository implementation (`mongo_repository.py`, `postgres_repository.py`).
-4. Models are pure data structures — no methods with business logic.
-5. Skipping a layer (e.g. router → repository) is forbidden, even for "simple" endpoints.
+1. A router only calls its service. It imports from `app.schemas` and `app.services`, never from `app.models`, `app.repositories` or `app.db`.
+2. **A service accesses data only through entity repositories** (`app/repositories`). It never imports `app.db`, `get_storage()`, or a driver.
+3. Services call only **public** repository methods. Every filter (`{"field": {"$gte": ...}}`) is written inside a repository method, never in a service.
+4. Driver code (`pymongo`, `asyncpg`) lives only in `app/db`. `bson.ObjectId` is allowed only there and in `app/models` (through `PyObjectId`).
+5. External HTTP calls live only in `app/integrations`; services get clients from factories and never import `httpx`.
+6. Services raise exceptions from `app/core/exceptions.py`, never `HTTPException`: they must also work outside an HTTP request.
+7. Models and schemas are pure data structures.
+8. Skipping a layer is forbidden, even for "simple" endpoints.
 
-This is what makes the storage backend swappable: services and routers are identical whether the app runs on MongoDB or PostgreSQL.
+**These rules are enforced by [tests/test_architecture.py](tests/test_architecture.py). Run `pytest` after every change. If it fails, fix the code, never the test.**
 
 ## Project Structure
 
 ```
 app/
-├── api/                       # HTTP routers (endpoints)
-│   ├── __init__.py
-│   ├── health_router.py
-│   └── log_router.py
-│
-├── services/                  # Business logic layer
-│   ├── __init__.py
-│   ├── health_service.py
-│   └── log_service.py
-│
-├── models/                    # Pydantic schemas
-│   ├── __init__.py
-│   ├── base.py                # PyObjectId validator
-│   ├── health.py
-│   ├── log.py
-│   └── error.py
-│
-├── core/                      # Configuration and utilities
-│   ├── __init__.py
+├── api/
+│   ├── error_handlers.py      # Maps app exceptions to HTTP responses
+│   ├── middleware.py          # AuditMiddleware (automatic audit log)
+│   └── v1/
+│       ├── __init__.py        # api_router: registers every v1 router
+│       ├── health_router.py
+│       └── audit_log_router.py
+├── core/
 │   ├── config.py              # Settings (env vars)
-│   └── decorator.py           # @handle_errors, @audit_log
-│
-├── db/                        # Database layer (repository pattern)
-│   ├── __init__.py
-│   ├── database.py            # Connection lifecycle + get_repository() factory
-│   ├── base_repository.py     # Abstract BaseRepository interface
-│   ├── mongo_repository.py    # MongoDB implementation (Motor)
-│   └── postgres_repository.py # PostgreSQL implementation (asyncpg, JSONB)
-│
-└── main.py                    # FastAPI entry point
+│   └── exceptions.py          # AppError, NotFoundError, InvalidInputError, ExternalServiceError
+├── db/                        # Storage layer (driver-specific)
+│   ├── database.py            # Connection lifecycle, get_storage(), ping_database()
+│   ├── base_storage.py        # Abstract BaseStorage interface
+│   ├── mongo_storage.py       # MongoDB implementation (active)
+│   └── postgres_storage.py    # PostgreSQL implementation (reference example)
+├── integrations/
+│   ├── clients.py             # Shared HTTP client lifecycle + client factories
+│   └── llm/
+│       ├── base_llm_client.py
+│       └── openrouter_client.py
+├── models/                    # Persistence models ({Feature}InDB)
+│   ├── base.py                # PyObjectId, utc_now
+│   └── audit_log.py
+├── repositories/              # Entity repositories
+│   ├── entity_repository.py   # Generic typed base class
+│   ├── audit_log_repository.py
+│   └── health_repository.py
+├── schemas/                   # API contract (Create/Update/Response)
+│   ├── audit_log.py
+│   ├── error.py
+│   └── health.py
+├── services/
+│   ├── audit_log_service.py
+│   └── health_service.py
+└── main.py                    # App assembly: lifespan, middleware, handlers, routers
+tests/
+└── test_architecture.py       # Layer boundary checks
 ```
 
 ---
 
-## Repository Pattern
+## Repositories
 
-All data access goes through `BaseRepository` ([app/db/base_repository.py](app/db/base_repository.py)), a database-agnostic abstract interface. The factory `get_repository(collection)` in [app/db/database.py](app/db/database.py) returns the concrete implementation (currently `MongoRepository`).
+Data access has two levels. Services only see the first.
 
-**Interface:**
+### Entity repositories (`app/repositories`)
+
+One repository per entity. It extends `EntityRepository[ModelT]` ([entity_repository.py](app/repositories/entity_repository.py)), takes and returns `{Feature}InDB` models, and exposes **domain methods** named after what they mean (`find_by_email`, `find_by_time_range`), never generic query methods.
+
+| Method | Visibility | Use |
+|--------|------------|-----|
+| `get_by_id(id)` | public | `Optional[ModelT]` (None also for invalid ids) |
+| `create(entity)` | public | Insert, returns the entity |
+| `update(id, fields)` | public | Set fields, `False` if the entity does not exist |
+| `delete(id)` | public | `False` if the entity does not exist |
+| `_find_one(filters)`, `_find_many(filters, limit, skip, sort)`, `_count(filters)`, `_exists(filters)` | protected | Building blocks for domain methods, used **only inside the repository** |
 
 ```python
-class BaseRepository(ABC):
+class AuditLogRepository(EntityRepository[AuditLogInDB]):
+    """Data access for audit logs."""
+
+    collection = "audit_logs"
+    model = AuditLogInDB
+
+    async def find_by_time_range(self, start: datetime, end: datetime, limit: int = 100, skip: int = 0) -> List[AuditLogInDB]:
+        """Logs with start <= timestamp < end, newest first."""
+        return await self._find_many(
+            {"timestamp": {"$gte": start, "$lt": end}},
+            limit=limit, skip=skip, sort=[("timestamp", -1)]
+        )
+
+
+audit_log_repository = AuditLogRepository()
+```
+
+Entity repositories are backend-agnostic: they never import drivers or a concrete storage class. A feature with no persisted entity still gets a repository for whatever it reads (see [health_repository.py](app/repositories/health_repository.py), which only pings the database).
+
+Filters use Mongo-style syntax, supported by both backends: equality plus `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`.
+
+### Storage (`app/db`)
+
+`BaseStorage` ([base_storage.py](app/db/base_storage.py)) is the driver-level interface for one collection/table: plain dicts in and out, string ids. Only `EntityRepository` uses it, through `get_storage(collection)` in [database.py](app/db/database.py).
+
+```python
+class BaseStorage(ABC):
     async def find_one(self, id: str) -> Optional[Dict[str, Any]]: ...
     async def find_one_by(self, filters: Dict[str, Any]) -> Optional[Dict[str, Any]]: ...
-    async def find_many(
-        self,
-        filters: Dict[str, Any],
-        limit: int = 100,
-        skip: int = 0,
-        sort: Optional[List[Tuple[str, int]]] = None   # [("field", 1 | -1)]
-    ) -> List[Dict[str, Any]]: ...
+    async def find_many(self, filters, limit=100, skip=0, sort=None) -> List[Dict[str, Any]]: ...
     async def count(self, filters: Dict[str, Any]) -> int: ...
     async def exists(self, filters: Dict[str, Any]) -> bool: ...
     async def insert_one(self, data: Dict[str, Any]) -> str: ...
     async def insert_many(self, data: List[Dict[str, Any]]) -> List[str]: ...
-    async def update_one(self, id: str, data: Dict[str, Any]) -> bool: ...
-    async def update_many(self, filters: Dict[str, Any], data: Dict[str, Any]) -> int: ...
+    async def update_one(self, id: str, data: Dict[str, Any]) -> bool: ...    # True if the document exists
+    async def update_many(self, filters, data) -> int: ...                   # matched documents
     async def delete_one(self, id: str) -> bool: ...
     async def delete_many(self, filters: Dict[str, Any]) -> int: ...
 ```
 
-**Rules:**
+- **`MongoStorage`** ([mongo_storage.py](app/db/mongo_storage.py)): PyMongo async API, documents stored as-is with `_id: ObjectId`. **Active backend.** The client is `tz_aware`, so datetimes come back as UTC-aware.
+- **`PostgresStorage`** ([postgres_storage.py](app/db/postgres_storage.py)): **reference example, not wired in.** Each collection is a table `(id TEXT PRIMARY KEY, data JSONB)` created on first use. Numbers compare numerically, other values as text (datetimes in ISO format, all UTC). Table and field names must be plain identifiers.
 
-1. Services depend **only** on `BaseRepository` — never on Motor, asyncpg, or `get_database()`.
-2. Get a repository with `get_repository("collection_name")`.
-3. Instantiate the repository **lazily** (the DB connection only exists after startup):
+Adding a backend = one new `{db}_storage.py` implementing `BaseStorage` + changes in `database.py`. Nothing else changes.
+
+---
+
+## Integrations
+
+Connectors to external services live in `app/integrations`, grouped by capability (`llm/`, `payments/`, ...):
+
+- `base_{capability}_client.py`: abstract interface (plain dicts in/out, no SDK types).
+- `{provider}_client.py`: implementation. Wraps every provider failure in `ExternalServiceError`.
+- [clients.py](app/integrations/clients.py): shared `httpx.AsyncClient` opened/closed in the app lifespan, plus one factory per capability (`get_llm_client()`). The factory is the only place that knows which provider is active.
+- Configuration (API keys, base URLs, default models) goes in `Settings`.
+
+Services use integrations through the factory:
 
 ```python
-class ProductService:
-    def __init__(self):
-        self._repo = None
+from app.integrations.clients import get_llm_client
 
-    @property
-    def repo(self) -> BaseRepository:
-        if self._repo is None:
-            self._repo = get_repository("products")
-        return self._repo
+
+class SummaryService:
+    """Business logic for text summaries."""
+
+    async def summarize(self, text: str) -> str:
+        result = await get_llm_client().complete(
+            [{"role": "user", "content": f"Summarize:\n{text}"}]
+        )
+        return result["content"]
 ```
 
-4. Repositories work with plain `dict`s; Pydantic conversion happens in the service.
-5. `find_one`/`update_one`/`delete_one` take the id as a string and handle id conversion internally (returning `None`/`False` for invalid ids).
-6. Filters use Mongo-style syntax; both backends support equality plus `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`.
-7. Adding a new backend = one new file implementing `BaseRepository` + a branch in `get_repository()`. Nothing else changes.
+The available LLM connector is `OpenRouterClient` (OpenAI-compatible API): set `OPENROUTER_API_KEY`, optionally `OPENROUTER_MODEL` (default `openrouter/auto`).
 
-### Implementations
+---
 
-- **`MongoRepository`** ([app/db/mongo_repository.py](app/db/mongo_repository.py)): native Motor implementation, documents stored as-is with `_id: ObjectId`. **This is the active backend.**
-- **`PostgresRepository`** ([app/db/postgres_repository.py](app/db/postgres_repository.py)): **reference example, not wired into the app.** Document-style storage on PostgreSQL via asyncpg. Each collection maps to a table `(id TEXT PRIMARY KEY, data JSONB)` created automatically on first use. Filter values are compared as text, so range filters work on ISO-formatted dates.
+## Errors
+
+Services raise exceptions from [app/core/exceptions.py](app/core/exceptions.py); [app/api/error_handlers.py](app/api/error_handlers.py) turns them into responses with body `{"error": "<ExceptionClass>", "message": "..."}`.
+
+| Exception | Status |
+|-----------|--------|
+| `NotFoundError` | 404 |
+| `InvalidInputError` | 400 |
+| `ExternalServiceError` | 502 |
+| Any other `AppError` | 400 |
+| Unexpected exception | 500, generic message (traceback only in the server log) |
+| Request validation (FastAPI) | 422 |
+
+To add an error type: subclass `AppError` and add it to `_STATUS_CODES` in `error_handlers.py`.
+
+## Audit Logging
+
+`AuditMiddleware` ([middleware.py](app/api/middleware.py)) records every call to an API route in `audit_logs`, with no per-route code. Fields: `action` (route function name), `endpoint` (request path), `method`, `status_code`, `duration_ms`, `timestamp` (UTC). Docs and unmatched paths are skipped, and a failure while writing the log is logged without affecting the response.
 
 ---
 
 ## Switching to PostgreSQL
 
-The codebase ships configured for MongoDB only. `PostgresRepository` is provided as a reference example: services and routers never change because they depend on `BaseRepository` only. To actually enable it:
+Services, repositories and routers never change. To enable `PostgresStorage`:
 
-### 1. Add the driver
+**1. `requirements.txt`**: add `asyncpg==0.31.0`.
 
-**File:** `requirements.txt`
-
-```
-asyncpg>=0.29.0
-```
-
-### 2. Add the settings
-
-**File:** `app/core/config.py` — these variables are intentionally NOT in `Settings` by default; add them only when switching:
+**2. `app/core/config.py`**: add the setting (not present by default):
 
 ```python
-class Settings(BaseSettings):
-    # ...existing settings...
-
-    # PostgreSQL backend
     POSTGRES_URI: str = "postgresql://postgres:postgres@localhost:5432/base_api_db"
 ```
 
-**File:** `.env`
-
-```env
-POSTGRES_URI=postgresql://postgres:postgres@base-postgres:5432/base_api_db
-```
-
-### 3. Wire connection and factory
-
-**File:** `app/db/database.py` — open the pool at startup and return the Postgres repository:
+**3. `app/db/database.py`**: replace the MongoDB lifecycle, ping and factory:
 
 ```python
-import asyncpg
-from app.db.postgres_repository import PostgresRepository
+import asyncio
+from typing import Optional
 
-async def db_connect():
+import asyncpg
+
+from app.core.config import settings
+from app.db.base_storage import BaseStorage
+from app.db.postgres_storage import PostgresStorage
+
+PING_TIMEOUT_SECONDS = 3
+
+
+class Database:
+    pg_pool: Optional[asyncpg.Pool] = None
+
+
+db = Database()
+
+
+async def db_connect() -> None:
     db.pg_pool = await asyncpg.create_pool(settings.POSTGRES_URI)
 
-async def db_disconnect():
+
+async def db_disconnect() -> None:
     if db.pg_pool:
         await db.pg_pool.close()
 
-def get_repository(collection: str) -> BaseRepository:
-    return PostgresRepository(db.pg_pool, collection)
+
+async def ping_database() -> bool:
+    try:
+        async with db.pg_pool.acquire() as conn:
+            await asyncio.wait_for(conn.fetchval("SELECT 1"), PING_TIMEOUT_SECONDS)
+        return True
+    except Exception:
+        return False
+
+
+def get_storage(collection: str) -> BaseStorage:
+    return PostgresStorage(db.pg_pool, collection)
 ```
 
-### 4. Update docker-compose
-
-**File:** `docker-compose.yaml` — add the PostgreSQL service and point `base-api` at it:
+**4. `docker-compose.yaml`**: add the database and point `base-api` at it (the Mongo services can be removed):
 
 ```yaml
 services:
   base-api:
     # ...existing config...
     environment:
-      - PYTHONUNBUFFERED=1
       - POSTGRES_URI=postgresql://postgres:postgres@base-postgres:5432/base_api_db
     depends_on:
       - base-postgres
@@ -234,80 +315,86 @@ volumes:
   base_postgres_data:
 ```
 
-The `base-mongo` and `base-mongo-express` services can be removed when MongoDB is no longer needed.
-
-### 5. Rebuild
-
-```bash
-docker-compose up -d --build
-```
+**5.** `docker-compose up -d --build`
 
 ---
 
 ## Naming Conventions
 
-### Files and Folders
+| Type | File | Class / instance |
+|------|------|------------------|
+| Model | `app/models/{feature}.py` | `{Feature}InDB` |
+| Schemas | `app/schemas/{feature}.py` | `{Feature}Create`, `{Feature}Update`, `{Feature}Response` |
+| Repository | `app/repositories/{feature}_repository.py` | `{Feature}Repository` / `{feature}_repository` |
+| Service | `app/services/{feature}_service.py` | `{Feature}Service` / `{feature}_service` |
+| Router | `app/api/v1/{feature}_router.py` | `router` |
+| Storage | `app/db/{db}_storage.py` | `{Db}Storage` |
+| Integration | `app/integrations/{capability}/{provider}_client.py` | `{Provider}Client` |
+| Collection | plural snake_case | `products`, `audit_logs` |
+| URL prefix | plural kebab-case | `/products`, `/audit-logs` |
 
-| Type | Pattern | Example |
-|------|---------|---------|
-| Router | `{feature}_router.py` | `user_router.py` |
-| Service | `{feature}_service.py` | `user_service.py` |
-| Model | `{feature}.py` | `user.py` |
-| Repository | `{db}_repository.py` | `mongo_repository.py` |
-
-### Classes and Variables
-
-| Type | Pattern | Example |
-|------|---------|---------|
-| DB model | `{Feature}InDB` | `UserInDB` |
-| Response model | `{Feature}Response` | `UserResponse` |
-| Create model | `{Feature}Create` | `UserCreate` |
-| Update model | `{Feature}Update` | `UserUpdate` |
-| Service class | `{Feature}Service` | `UserService` |
-| Service instance | `{feature}_service` | `user_service` |
-| Router instance | `router` | `router` |
-| DB collection | `{features}` (plural, snake_case) | `users`, `audit_logs` |
-
-### Python Code
-
-- **Functions and variables**: `snake_case`
-- **Classes**: `PascalCase`
-- **Constants**: `UPPER_SNAKE_CASE`
-- **Files**: `snake_case.py`
+Python: `snake_case` functions/variables/files, `PascalCase` classes, `UPPER_SNAKE_CASE` constants.
 
 ---
 
 ## Adding a New Feature
 
-Follow these steps in order to add a new feature (example: `Product`). **All four layers are required.**
+Example: `Product`. **All steps are required.**
 
-### 1. Create the Model
-
-**File:** `app/models/product.py`
+### 1. Model — `app/models/product.py`
 
 ```python
 from datetime import datetime
-from typing import Optional, List
-from pydantic import BaseModel, Field
-from app.models.base import PyObjectId
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.base import PyObjectId, utc_now
 
 
 class ProductInDB(BaseModel):
-    """Persistence model."""
+    """Persistence model for the products collection."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     name: str
     description: Optional[str] = None
     price: float
     category: str
     tags: List[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     updated_at: Optional[datetime] = None
+```
 
-    class Config:
-        populate_by_name = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+- Always `PyObjectId` with `alias="_id"` and `model_config = ConfigDict(populate_by_name=True)`.
+- Timestamps with `default_factory=utc_now` (never `datetime.utcnow`/`datetime.now()`).
+- Pydantic v2 only: no `class Config`, no `json_encoders`.
+
+### 2. Schemas — `app/schemas/product.py`
+
+```python
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class ProductCreate(BaseModel):
+    """POST request body."""
+    name: str
+    description: Optional[str] = None
+    price: float = Field(gt=0)
+    category: str
+    tags: List[str] = Field(default_factory=list)
+
+
+class ProductUpdate(BaseModel):
+    """PATCH request body: only the fields sent are updated."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = Field(default=None, gt=0)
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 
 class ProductResponse(BaseModel):
@@ -319,496 +406,212 @@ class ProductResponse(BaseModel):
     category: str
     tags: List[str]
     created_at: datetime
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
-
-class ProductCreate(BaseModel):
-    """POST request model."""
-    name: str
-    description: Optional[str] = None
-    price: float
-    category: str
-    tags: List[str] = Field(default_factory=list)
-
-
-class ProductUpdate(BaseModel):
-    """PUT/PATCH request model."""
-    name: Optional[str] = None
-    description: Optional[str] = None
-    price: Optional[float] = None
-    category: Optional[str] = None
-    tags: Optional[List[str]] = None
+    updated_at: Optional[datetime]
 ```
 
-**Model rules:**
+- Schemas never import from `app.models`. Routers never expose `InDB` models.
 
-1. **Mandatory separation**: `InDB` for persistence, `Response` for API output, `Create`/`Update` for input
-2. **MongoDB id**: always use `PyObjectId` with `alias="_id"`
-3. **Timestamps**: `created_at` with `default_factory=datetime.utcnow`
-4. **Type hints**: always complete; use `Optional[]` for nullable fields
-5. **Config class**: always include `json_encoders` for datetime
-6. **No logic**: models are pure data structures — no business methods
-
----
-
-### 2. Create the Service
-
-**File:** `app/services/product_service.py`
+### 3. Repository — `app/repositories/product_repository.py`
 
 ```python
-from datetime import datetime
 from typing import List, Optional
-from fastapi import HTTPException
 
-from app.db.base_repository import BaseRepository
-from app.db.database import get_repository
-from app.models.product import (
-    ProductInDB,
-    ProductResponse,
-    ProductCreate,
-    ProductUpdate
-)
+from app.models.product import ProductInDB
+from app.repositories.entity_repository import EntityRepository
+
+
+class ProductRepository(EntityRepository[ProductInDB]):
+    """Data access for products."""
+
+    collection = "products"
+    model = ProductInDB
+
+    async def find_by_category(
+        self,
+        category: Optional[str] = None,
+        limit: int = 100,
+        skip: int = 0
+    ) -> List[ProductInDB]:
+        """Products in a category (all if None), newest first."""
+        filters = {"category": category} if category else {}
+        return await self._find_many(filters, limit=limit, skip=skip, sort=[("created_at", -1)])
+
+    async def exists_by_name(self, name: str) -> bool:
+        return await self._exists({"name": name})
+
+
+product_repository = ProductRepository()
+```
+
+- Set `collection` and `model`; add one domain method per query the service needs.
+- Export a singleton. Never import drivers or `bson`.
+
+### 4. Service — `app/services/product_service.py`
+
+```python
+from typing import List, Optional
+
+from app.core.exceptions import InvalidInputError, NotFoundError
+from app.models.base import utc_now
+from app.models.product import ProductInDB
+from app.repositories.product_repository import product_repository
+from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 
 
 class ProductService:
-    """Service handling product business logic."""
-
-    def __init__(self):
-        self._repo = None
-
-    @property
-    def repo(self) -> BaseRepository:
-        if self._repo is None:
-            self._repo = get_repository("products")
-        return self._repo
+    """Business logic for products."""
 
     async def create(self, data: ProductCreate) -> ProductResponse:
-        """Create a new product."""
-        product = ProductInDB(**data.model_dump())
-        product_id = await self.repo.insert_one(
-            product.model_dump(by_alias=True)
-        )
+        """
+        Create a product.
 
-        created = await self.repo.find_one(product_id)
-        return self._to_response(created)
-
-    async def get_by_id(self, product_id: str) -> ProductResponse:
-        """Fetch a product by id."""
-        product = await self.repo.find_one(product_id)
-
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
-
+        Raises:
+            InvalidInputError: If a product with the same name exists
+        """
+        if await product_repository.exists_by_name(data.name):
+            raise InvalidInputError(f"Product '{data.name}' already exists")
+        product = await product_repository.create(ProductInDB(**data.model_dump()))
         return self._to_response(product)
 
-    async def get_all(
-        self,
-        category: Optional[str] = None,
-        limit: int = 100
-    ) -> List[ProductResponse]:
-        """Fetch all products with optional filters."""
-        filters = {}
-        if category:
-            filters["category"] = category
+    async def get_by_id(self, product_id: str) -> ProductResponse:
+        """Fetch a product. Raises NotFoundError if missing."""
+        product = await product_repository.get_by_id(product_id)
+        if product is None:
+            raise NotFoundError("Product not found")
+        return self._to_response(product)
 
-        products = await self.repo.find_many(filters, limit=limit)
+    async def get_all(self, category: Optional[str], limit: int, skip: int) -> List[ProductResponse]:
+        """Fetch products, optionally filtered by category."""
+        products = await product_repository.find_by_category(category, limit=limit, skip=skip)
         return [self._to_response(p) for p in products]
 
-    async def update(
-        self,
-        product_id: str,
-        data: ProductUpdate
-    ) -> ProductResponse:
-        """Update an existing product."""
-        update_data = {
-            k: v for k, v in data.model_dump().items()
-            if v is not None
-        }
-        update_data["updated_at"] = datetime.utcnow()
-
-        updated = await self.repo.update_one(product_id, update_data)
-
-        if not updated:
-            raise HTTPException(status_code=404, detail="Product not found")
-
+    async def update(self, product_id: str, data: ProductUpdate) -> ProductResponse:
+        """Update the fields sent. Raises NotFoundError if missing."""
+        fields = data.model_dump(exclude_unset=True)
+        fields["updated_at"] = utc_now()
+        if not await product_repository.update(product_id, fields):
+            raise NotFoundError("Product not found")
         return await self.get_by_id(product_id)
 
-    async def delete(self, product_id: str) -> bool:
-        """Delete a product."""
-        deleted = await self.repo.delete_one(product_id)
+    async def delete(self, product_id: str) -> None:
+        """Delete a product. Raises NotFoundError if missing."""
+        if not await product_repository.delete(product_id):
+            raise NotFoundError("Product not found")
 
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        return True
-
-    def _to_response(self, doc: dict) -> ProductResponse:
-        """Convert a raw document into a ProductResponse."""
-        return ProductResponse(
-            id=str(doc["_id"]),
-            name=doc["name"],
-            description=doc.get("description"),
-            price=doc["price"],
-            category=doc["category"],
-            tags=doc.get("tags", []),
-            created_at=doc["created_at"]
-        )
+    def _to_response(self, product: ProductInDB) -> ProductResponse:
+        return ProductResponse(id=str(product.id), **product.model_dump(exclude={"id"}))
 
 
-# Singleton instance
 product_service = ProductService()
 ```
 
-**Service rules:**
+- One class per feature, exported as a singleton, all methods async.
+- Returns `Response` schemas; converts with a private `_to_response()`.
+- Business rules (uniqueness, ranges, permissions) live here; queries live in the repository.
 
-1. **One class per feature**: `ProductService` handles products only
-2. **Singleton**: always export an instance `product_service = ProductService()`
-3. **Lazy repository**: `repo` property calling `get_repository()` on first access
-4. **Never use the driver directly**: every DB operation goes through the repository
-5. **Async methods**: all DB operations must be async
-6. **Typed returns**: always return Pydantic models (`Response` or `InDB`)
-7. **HTTPException**: raise FastAPI exceptions for errors (404, 400, etc.)
-8. **Private helper**: `_to_response()` for document → response conversion
-
----
-
-### 3. Create the Router
-
-**File:** `app/api/product_router.py`
+### 5. Router — `app/api/v1/product_router.py`
 
 ```python
 from typing import List, Optional
+
 from fastapi import APIRouter, Query, status
 
-from app.core.decorator import handle_errors, audit_log
-from app.models.product import (
-    ProductResponse,
-    ProductCreate,
-    ProductUpdate
-)
+from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services.product_service import product_service
-
 
 router = APIRouter(prefix="/products", tags=["products"])
 
 
-@router.post(
-    "/",
-    response_model=ProductResponse,
-    status_code=status.HTTP_201_CREATED
-)
-@handle_errors
-@audit_log(method="POST", metadata={"service": "products"})
+@router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 async def create_product(data: ProductCreate) -> ProductResponse:
     """Create a new product."""
     return await product_service.create(data)
 
 
-@router.get(
-    "/{product_id}",
-    response_model=ProductResponse,
-    status_code=status.HTTP_200_OK
-)
-@handle_errors
-@audit_log(method="GET", metadata={"service": "products"})
+@router.get("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
 async def get_product(product_id: str) -> ProductResponse:
     """Fetch a product by id."""
     return await product_service.get_by_id(product_id)
 
 
-@router.get(
-    "/",
-    response_model=List[ProductResponse],
-    status_code=status.HTTP_200_OK
-)
-@handle_errors
-@audit_log(method="GET", metadata={"service": "products"})
+@router.get("", response_model=List[ProductResponse], status_code=status.HTTP_200_OK)
 async def get_products(
     category: Optional[str] = Query(None, description="Filter by category"),
-    limit: int = Query(100, ge=1, le=1000, description="Max results")
+    limit: int = Query(100, ge=1, le=1000, description="Max results"),
+    skip: int = Query(0, ge=0, description="Results to skip")
 ) -> List[ProductResponse]:
-    """Fetch all products with optional filters."""
-    return await product_service.get_all(category=category, limit=limit)
+    """Fetch products with optional filters."""
+    return await product_service.get_all(category=category, limit=limit, skip=skip)
 
 
-@router.put(
-    "/{product_id}",
-    response_model=ProductResponse,
-    status_code=status.HTTP_200_OK
-)
-@handle_errors
-@audit_log(method="PUT", metadata={"service": "products"})
-async def update_product(
-    product_id: str,
-    data: ProductUpdate
-) -> ProductResponse:
+@router.patch("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
+async def update_product(product_id: str, data: ProductUpdate) -> ProductResponse:
     """Update an existing product."""
     return await product_service.update(product_id, data)
 
 
-@router.delete(
-    "/{product_id}",
-    status_code=status.HTTP_204_NO_CONTENT
-)
-@handle_errors
-@audit_log(method="DELETE", metadata={"service": "products"})
+@router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_product(product_id: str) -> None:
     """Delete a product."""
     await product_service.delete(product_id)
 ```
 
-**Router rules:**
+- `prefix` and `tags` always set; collection routes use `""`, not `"/"`.
+- Always `response_model`, explicit `status.HTTP_*`, return type, docstring (shown in Swagger).
+- Query params with `Query()` and a description; paginated lists take `limit` and `skip`.
+- No try/except and no decorators: errors and audit are handled globally.
 
-1. **One router per feature**: separate file for each domain
-2. **Prefix and tags**: always set `prefix="/feature"` and `tags=["feature"]`
-3. **Mandatory decorators**: always apply `@handle_errors` and `@audit_log`
-4. **Decorator order**: `@router.method` → `@handle_errors` → `@audit_log` → `async def`
-5. **response_model**: always specify the response model
-6. **Explicit status_code**: use `status.HTTP_*` for clarity
-7. **Type hints**: return type always specified
-8. **Docstring**: short description for every endpoint (shown in Swagger)
-9. **Query params**: use `Query()` with description for documentation
-10. **No logic**: the router only calls the service — zero business logic
-
----
-
-### 4. Register the Router
-
-**File:** `app/main.py`
-
-Add the import and include the router:
+### 6. Register — `app/api/v1/__init__.py`
 
 ```python
-from app.api import health_router, log_router, product_router  # Added
+from app.api.v1 import audit_log_router, health_router, product_router
 
-# ...
-
-router = APIRouter(prefix="/api/v1")
-router.include_router(health_router.router)
-router.include_router(log_router.router)
-router.include_router(product_router.router)  # Added
+api_router.include_router(product_router.router)
 ```
-
----
-
-## Available Decorators
-
-### @handle_errors
-
-Catches every exception and converts it into an `HTTPException` with traceback.
-
-```python
-@router.get("/")
-@handle_errors
-async def my_endpoint():
-    # If anything fails, returns 500 with details
-    ...
-```
-
-### @audit_log
-
-Automatically records every call in the database (`audit_logs` collection).
-
-```python
-@router.get("/")
-@handle_errors
-@audit_log(method="GET", metadata={"service": "my_service"})
-async def my_endpoint():
-    ...
-```
-
-**Recorded fields:**
-- `action`: function name
-- `endpoint`: endpoint path
-- `method`: HTTP method
-- `status`: "success" or "error"
-- `duration_ms`: execution time
-- `metadata`: custom data
-- `timestamp`: call date/time
 
 ---
 
 ## Configuration
 
-### Environment Variables
-
-**File:** `.env`
-
-```env
-# Ports
-API_PORT=5008
-MONGO_EXPRESS_PORT=8081
-
-# MongoDB
-MONGODB_URI=mongodb://localhost:27017
-MONGO_DB=base_api_db
-MONGO_VERSION=6
-
-# Mongo Express
-MONGO_EXPRESS_VERSION=1.0.0-alpha.4
-MONGO_EXPRESS_USER=admin
-MONGO_EXPRESS_PASSWORD=admin
-```
-
-### Adding New Variables
-
-**File:** `app/core/config.py`
+Settings live in [app/core/config.py](app/core/config.py) and are read from environment variables or `.env` (see [.env.example](.env.example)). Add new variables there with a default:
 
 ```python
 class Settings(BaseSettings):
-    # Add new variables here
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     MY_NEW_VAR: str = "default_value"
-    MY_NEW_INT: int = 42
-
-    class Config:
-        env_file = ".env"
 ```
-
----
 
 ## Docker
 
-### Useful Commands
+`docker-compose.yaml` is for development: it mounts the code and runs uvicorn with `--reload`. The `Dockerfile` alone builds a self-contained image (code copied, non-root user, no reload).
 
 ```bash
-# Start all services
-docker-compose up -d
-
-# Rebuild after changes
-docker-compose up -d --build
-
-# Logs
-docker-compose logs -f base-api
-
-# Stop
-docker-compose down
-
-# Stop and remove volumes
-docker-compose down -v
+docker-compose up -d            # start
+docker-compose up -d --build    # rebuild after dependency changes
+docker-compose logs -f base-api # logs
+docker-compose down [-v]        # stop [and remove volumes]
 ```
-
-### Container Architecture (default, MongoDB backend)
-
-```
-┌─────────────────┐
-│    base-api     │
-│   (FastAPI)     │
-│   port 5008     │
-└────────┬────────┘
-         │
-  ┌──────┴──────┐
-  │  base-mongo │
-  │  (MongoDB)  │
-  │ port 27017  │
-  └──────┬──────┘
-         │
-┌────────┴──────────────┐
-│   base-mongo-express  │
-│    (Admin UI)         │
-│     port 8081         │
-└───────────────────────┘
-```
-
-See [Switching to PostgreSQL](#switching-to-postgresql) for the PostgreSQL setup.
 
 ---
 
 ## Code Style
 
-### Imports
-
-Mandatory order:
-
-```python
-# 1. Standard library
-from datetime import datetime
-from typing import List, Optional
-import time
-
-# 2. Third-party
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
-from bson import ObjectId
-
-# 3. Local imports
-from app.core.config import settings
-from app.db.database import get_repository
-from app.models.product import ProductResponse
-```
-
-### Type Hints
-
-Always complete:
-
-```python
-# ✅ Correct
-async def get_products(limit: int = 100) -> List[ProductResponse]:
-    ...
-
-# ❌ Wrong
-async def get_products(limit=100):
-    ...
-```
-
-### Docstrings
-
-Google style for public functions:
-
-```python
-async def create_product(data: ProductCreate) -> ProductResponse:
-    """
-    Create a new product in the database.
-
-    Args:
-        data: Product data to create
-
-    Returns:
-        The created product with assigned id
-
-    Raises:
-        HTTPException: If validation fails
-    """
-    ...
-```
-
-### Async/Await
-
-All I/O operations must be async:
-
-```python
-# ✅ Correct
-async def get_product(product_id: str) -> Optional[dict]:
-    return await self.repo.find_one(product_id)
-
-# ❌ Wrong (blocks the event loop)
-def get_product(product_id: str) -> Optional[dict]:
-    return self.repo.find_one(product_id)
-```
-
----
+- **Imports**: standard library, third-party, local (`app.*`), separated by a blank line.
+- **Type hints**: always complete, including return types.
+- **Docstrings**: Google style for public methods (`Args`, `Returns`, `Raises` when useful).
+- **Async**: every I/O operation is `async`/`await`.
+- **Time**: always UTC-aware, via `utc_now()`.
 
 ## New Feature Checklist
 
-- [ ] Model created in `app/models/{feature}.py`
-  - [ ] `{Feature}InDB` with `PyObjectId` and `alias="_id"`
-  - [ ] `{Feature}Response` for API output
-  - [ ] `{Feature}Create` for POST input
-  - [ ] `{Feature}Update` for PUT/PATCH input (optional)
-- [ ] Service created in `app/services/{feature}_service.py`
-  - [ ] `{Feature}Service` class
-  - [ ] Lazy `repo` property using `get_repository("collection")`
-  - [ ] Async CRUD methods using the repository only
-  - [ ] Singleton instance exported
-- [ ] Router created in `app/api/{feature}_router.py`
-  - [ ] `prefix` and `tags` configured
-  - [ ] `@handle_errors` and `@audit_log` decorators applied
-  - [ ] `response_model` and `status_code` specified
-- [ ] Router registered in `app/main.py`
-- [ ] No layer skipped, no direct driver access anywhere
+- [ ] `app/models/{feature}.py`: `{Feature}InDB` with `PyObjectId` alias `_id`, `utc_now` timestamps
+- [ ] `app/schemas/{feature}.py`: `Create`, `Update` (if needed), `Response`
+- [ ] `app/repositories/{feature}_repository.py`: extends `EntityRepository`, domain methods, singleton
+- [ ] `app/services/{feature}_service.py`: uses only public repository methods, raises `AppError` subclasses, singleton
+- [ ] `app/api/v1/{feature}_router.py`: schemas only, `response_model` + `status_code`
+- [ ] Router registered in `app/api/v1/__init__.py`
+- [ ] `pytest` passes
 
 ---
 
@@ -816,37 +619,10 @@ def get_product(product_id: str) -> Optional[dict]:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/v1/health/check` | API health check |
-| GET | `/api/v1/logs/audit` | Fetch audit logs by date range |
+| GET | `/api/v1/health/check` | API uptime and database reachability |
+| GET | `/api/v1/audit-logs` | Audit logs in a date range, newest first |
 
-**`/logs/audit` parameters:**
-- `start_date`: start date (format: DD-MM-YYYY)
-- `end_date`: end date (format: DD-MM-YYYY)
-
----
-
-## Troubleshooting
-
-### MongoDB Connection Error
-
-```bash
-# Check that MongoDB is running
-docker-compose ps base-mongo
-
-# Check the logs
-docker-compose logs base-mongo
-```
-
-### Import Error
-
-Check that `PYTHONPATH` is configured:
-
-```bash
-# Inside the container
-export PYTHONPATH=/app
-```
-
----
+`/audit-logs` query parameters: `start_date`, `end_date` (`YYYY-MM-DD`, inclusive, UTC), `limit` (1-1000, default 100), `skip` (default 0).
 
 ## License
 

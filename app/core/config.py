@@ -1,17 +1,21 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Base API"
-    MONGODB_URI: str = "mongodb://localhost:27017"
-    MONGO_DB: str = "sybilla_db"
-    MONGO_VERSION: str = "6"
-    MONGO_EXPRESS_PORT: int = 8081
-    MONGO_EXPRESS_VERSION: str = "1.0.0-alpha.4"
-    MONGO_EXPRESS_USER: str = "admin"
-    MONGO_EXPRESS_PASSWORD: str = "admin"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    PROJECT_NAME: str = "Base API"
+    APP_VERSION: str = "1.0.0"
+
+    # MongoDB
+    MONGODB_URI: str = "mongodb://localhost:27017"
+    MONGO_DB: str = "base_api_db"
+
+    # External integrations
+    HTTP_TIMEOUT_SECONDS: float = 30.0
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MODEL: str = "openrouter/auto"
+
 
 settings = Settings()
