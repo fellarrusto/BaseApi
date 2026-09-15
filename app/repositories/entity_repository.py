@@ -1,27 +1,39 @@
+import logging
 from typing import Any, Dict, Generic, List, Optional, Tuple, Type, TypeVar
 
 from pydantic import BaseModel
 
-from app.db.base_storage import BaseStorage
+from app.db.base_storage import BaseStorage, Index
 from app.db.database import get_storage
 
+logger = logging.getLogger(__name__)
+
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+# Every repository instance, so their indexes can be created at startup
+_repositories: List["EntityRepository"] = []
 
 
 class EntityRepository(Generic[ModelT]):
     """
     Typed data access for one entity: `{Feature}InDB` models in and out.
 
-    Subclasses set `collection` and `model`, and add domain queries
-    (e.g. `find_by_email`) built on the protected `_find_*` helpers.
+    Subclasses set `collection` and `model`, optionally `indexes`, and add
+    domain queries (e.g. `find_by_email`) built on the protected helpers.
     Filters are Mongo-style and never leave the repository.
     """
 
     collection: str
     model: Type[ModelT]
+    indexes: List[Index] = []
 
     def __init__(self) -> None:
         self._storage_instance: Optional[BaseStorage] = None
+        _repositories.append(self)
+
+    async def ensure_indexes(self) -> None:
+        for index in self.indexes:
+            await self._storage.ensure_index(index.fields, index.expire_after_seconds)
 
     @property
     def _storage(self) -> BaseStorage:
@@ -85,3 +97,13 @@ class EntityRepository(Generic[ModelT]):
 
     def _to_model(self, doc: Dict[str, Any]) -> ModelT:
         return self.model.model_validate(doc)
+
+
+async def ensure_all_indexes() -> None:
+    """Create the indexes declared by every repository (called at API startup)."""
+    for repository in _repositories:
+        try:
+            await repository.ensure_indexes()
+        except Exception:
+            # e.g. a changed retention conflicts with the existing index: drop it to apply the new one
+            logger.exception("Could not create indexes for collection %s", repository.collection)

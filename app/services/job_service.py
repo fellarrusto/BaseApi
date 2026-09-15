@@ -100,7 +100,9 @@ class JobService:
 
     async def fail(self, job_id: str, worker_id: str, error: str, attempts: int, max_attempts: int) -> None:
         """Retry with exponential backoff while attempts remain, then mark the job failed."""
-        if attempts < max_attempts:
+        if await self.is_cancel_requested(job_id):
+            await self.cancel_running(job_id, worker_id)  # a cancelled job is never retried
+        elif attempts < max_attempts:
             delay = min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2 ** (attempts - 1))
             await job_repository.reschedule(job_id, worker_id, error, utc_now() + timedelta(seconds=delay))
         else:

@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import List
 
+from app.core.config import settings
+from app.db.base_storage import Index
 from app.models.audit_log import AuditLogInDB
 from app.repositories.entity_repository import EntityRepository
 
@@ -10,6 +12,10 @@ class AuditLogRepository(EntityRepository[AuditLogInDB]):
 
     collection = "audit_logs"
     model = AuditLogInDB
+    indexes = [
+        # Date range queries + retention (0 days = keep forever)
+        Index([("timestamp", 1)], expire_after_seconds=settings.AUDIT_LOG_RETENTION_DAYS * 86400 or None),
+    ]
 
     async def find_by_time_range(
         self,

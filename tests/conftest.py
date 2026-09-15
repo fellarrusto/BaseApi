@@ -1,4 +1,4 @@
-"""Shared test fixtures: in-memory storage, HTTP client, mock auth, fake LLM."""
+"""Shared test fixtures: in-memory storage, HTTP client, mock auth."""
 import os
 from typing import AsyncIterator, Callable, Dict
 
@@ -11,7 +11,6 @@ os.environ["CORS_ORIGINS"] = "[]"
 
 from app.main import app  # noqa: E402
 from app.repositories.entity_repository import EntityRepository  # noqa: E402
-from tests.fakes import FakeLLMClient  # noqa: E402
 from tests.memory_storage import MemoryStorage  # noqa: E402
 
 
@@ -41,11 +40,3 @@ def auth() -> Callable[..., Dict[str, str]]:
         token = f"mock:{user_id}:{','.join(roles)}" if roles else f"mock:{user_id}"
         return {"Authorization": f"Bearer {token}"}
     return headers
-
-
-@pytest.fixture
-def fake_llm() -> FakeLLMClient:
-    """Patch it where the service imports the factory:
-    monkeypatch.setattr("app.services.x_service.get_llm_client", lambda: fake_llm)
-    """
-    return FakeLLMClient()

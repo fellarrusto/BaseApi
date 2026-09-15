@@ -11,6 +11,7 @@ from app.core.exceptions import (
     ForbiddenError,
     InvalidInputError,
     NotFoundError,
+    ServiceUnavailableError,
     UnauthorizedError,
 )
 from app.schemas.error import ErrorResponse
@@ -24,6 +25,7 @@ _STATUS_CODES = [
     (NotFoundError, status.HTTP_404_NOT_FOUND),
     (InvalidInputError, status.HTTP_400_BAD_REQUEST),
     (ExternalServiceError, status.HTTP_502_BAD_GATEWAY),
+    (ServiceUnavailableError, status.HTTP_503_SERVICE_UNAVAILABLE),
 ]
 
 

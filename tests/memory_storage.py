@@ -79,6 +79,9 @@ class MemoryStorage(BaseStorage):
         docs[0].update(copy.deepcopy(data))
         return copy.deepcopy(docs[0])
 
+    async def ensure_index(self, fields, expire_after_seconds=None) -> None:
+        pass  # no indexes in memory
+
     async def delete_one(self, id: str) -> bool:
         return self.docs.pop(id, None) is not None
 

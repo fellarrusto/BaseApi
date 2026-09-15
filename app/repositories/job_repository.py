@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.core.config import settings
+from app.db.base_storage import Index
 from app.models.job import JobInDB, JobStatus
 from app.repositories.entity_repository import EntityRepository
 
@@ -10,6 +12,12 @@ class JobRepository(EntityRepository[JobInDB]):
 
     collection = "jobs"
     model = JobInDB
+    indexes = [
+        Index([("status", 1), ("run_after", 1)]),       # worker queue
+        Index([("user_id", 1), ("created_at", -1)]),     # job listing
+        # Finished jobs are deleted after the retention (0 days = keep forever)
+        Index([("finished_at", 1)], expire_after_seconds=settings.JOB_RETENTION_DAYS * 86400 or None),
+    ]
 
     async def find_visible(
         self,
@@ -36,13 +44,8 @@ class JobRepository(EntityRepository[JobInDB]):
         """Atomically take the oldest due pending job and mark it running for this worker."""
         job = await self._claim_one(
             {"status": JobStatus.PENDING, "run_after": {"$lte": now}},
-            {
-                "status": JobStatus.RUNNING,
-                "worker_id": worker_id,
-                "locked_until": locked_until,
-                "started_at": now,
-                "cancel_requested": False,
-            },
+            # cancel_requested is kept: a cancellation must survive retries and crashes
+            {"status": JobStatus.RUNNING, "worker_id": worker_id, "locked_until": locked_until, "started_at": now},
             sort=[("run_after", 1)]
         )
         if job is None:
@@ -52,6 +55,7 @@ class JobRepository(EntityRepository[JobInDB]):
         return job
 
     async def extend_lock(self, job_id: str, worker_id: str, locked_until: datetime) -> bool:
+        """Returns False if the job is no longer running for this worker."""
         return await self._update(job_id, {"locked_until": locked_until}, where=self._owned_by(worker_id))
 
     async def set_progress(self, job_id: str, worker_id: str, percent: float, message: Optional[str]) -> bool:
@@ -104,11 +108,20 @@ class JobRepository(EntityRepository[JobInDB]):
         return await self._update(job_id, {"cancel_requested": True}, where={"status": JobStatus.RUNNING})
 
     async def release_expired_locks(self, now: datetime) -> int:
-        """Running jobs whose worker stopped renewing the lock go back to pending."""
-        return await self._update_many(
-            {"status": JobStatus.RUNNING, "locked_until": {"$lt": now}},
+        """
+        Running jobs whose worker stopped renewing the lock: cancelled if a
+        cancellation was requested, otherwise back to pending.
+        """
+        expired = {"status": JobStatus.RUNNING, "locked_until": {"$lt": now}}
+        cancelled = await self._update_many(
+            {**expired, "cancel_requested": True},
+            {"status": JobStatus.CANCELLED, "finished_at": now, "worker_id": None, "locked_until": None}
+        )
+        requeued = await self._update_many(
+            expired,
             {"status": JobStatus.PENDING, "worker_id": None, "locked_until": None}
         )
+        return cancelled + requeued
 
     @staticmethod
     def _owned_by(worker_id: str) -> Dict[str, Any]:

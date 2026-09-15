@@ -60,7 +60,7 @@ Router (HTTP) → Service (business logic) → Repository (entity data access) �
 | **Service** | `app/services` | Business logic, `InDB` → `Response` conversion | Storage/driver access, filters, `HTTPException` |
 | **Repository** | `app/repositories` | Typed data access for one entity, owns every query/filter | Business logic, HTTP, driver imports |
 | **Storage** | `app/db` | Driver code behind `BaseStorage` (dicts in/out) | Anything entity-specific |
-| **Integration** | `app/integrations` | Connectors to external services (LLM, APIs) | Business logic, data access |
+| **Integration** | `app/integrations` | Connectors to external services (payments, email, AI, ...) | Business logic, data access |
 | **Decorators** | `app/decorators` | Endpoint cross-cutting concerns: errors, audit, auth | Business logic, data access |
 | **Jobs** | `app/jobs` | Background job handlers (`@job`) and the worker runner | Data access, HTTP (handlers call services only) |
 
@@ -106,10 +106,7 @@ app/
 │   ├── mongo_storage.py       # MongoDB implementation (active)
 │   └── postgres_storage.py    # PostgreSQL implementation (reference example)
 ├── integrations/
-│   ├── clients.py             # Shared HTTP client lifecycle + client factories
-│   └── llm/
-│       ├── base_llm_client.py
-│       └── openrouter_client.py
+│   └── clients.py             # Shared HTTP client lifecycle + connector factories
 ├── jobs/                      # Background jobs (run by the worker)
 │   ├── __init__.py            # imports every job module so handlers get registered
 │   ├── registry.py            # @job decorator
@@ -140,9 +137,8 @@ app/
 ├── main.py                    # API entry point: logging, lifespan, CORS, routers
 └── worker.py                  # Worker entry point: python -m app.worker
 tests/
-├── conftest.py                # Fixtures: client, auth, in-memory storage, fake_llm
+├── conftest.py                # Fixtures: client, auth, in-memory storage
 ├── memory_storage.py          # In-memory BaseStorage
-├── fakes.py                   # FakeLLMClient
 ├── test_architecture.py       # Layers, decorators, every endpoint tested
 └── api/v1/test_*_router.py    # One test file per router
 ```
@@ -187,6 +183,17 @@ Entity repositories are backend-agnostic: they never import drivers or a concret
 
 Filters use Mongo-style syntax, supported by both backends: equality plus `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`.
 
+**Indexes and retention** are declared on the repository and created at API startup:
+
+```python
+indexes = [
+    Index([("status", 1), ("run_after", 1)]),                     # a query the repository runs often
+    Index([("timestamp", 1)], expire_after_seconds=90 * 86400),   # retention: delete after 90 days
+]
+```
+
+Add an index for every filter/sort a domain method uses on a growing collection. Retention (`expire_after_seconds`, single date field) is automatic on MongoDB; PostgreSQL has no expiry and logs a warning. Retention periods come from `Settings` (`AUDIT_LOG_RETENTION_DAYS`, `JOB_RETENTION_DAYS`); changing one later requires dropping the existing index.
+
 ### Storage (`app/db`)
 
 `BaseStorage` ([base_storage.py](app/db/base_storage.py)) is the driver-level interface for one collection/table: plain dicts in and out, string ids. Only `EntityRepository` uses it, through `get_storage(collection)` in [database.py](app/db/database.py).
@@ -203,6 +210,7 @@ class BaseStorage(ABC):
     async def update_one(self, id: str, data, where=None) -> bool: ...        # True if it exists and matches `where`
     async def update_many(self, filters, data) -> int: ...                   # matched documents
     async def claim_one(self, filters, data, sort=None) -> Optional[Dict]: ... # atomic update + return (job queue)
+    async def ensure_index(self, fields, expire_after_seconds=None) -> None: ... # idempotent
     async def delete_one(self, id: str) -> bool: ...
     async def delete_many(self, filters: Dict[str, Any]) -> int: ...
 ```
@@ -216,30 +224,42 @@ Adding a backend = one new `{db}_storage.py` implementing `BaseStorage` + change
 
 ## Integrations
 
-Connectors to external services live in `app/integrations`, grouped by capability (`llm/`, `payments/`, ...):
+Connectors to external services live in `app/integrations`, one folder per capability (`geocoding/`, `payments/`, ...). The boilerplate ships only the shared HTTP client ([clients.py](app/integrations/clients.py)), opened and closed in the app and worker lifespan.
 
-- `base_{capability}_client.py`: abstract interface (plain dicts in/out, no SDK types).
-- `{provider}_client.py`: implementation. Wraps every provider failure in `ExternalServiceError`.
-- [clients.py](app/integrations/clients.py): shared `httpx.AsyncClient` opened/closed in the app lifespan, plus one factory per capability (`get_llm_client()`). The factory is the only place that knows which provider is active.
-- Configuration (API keys, base URLs, default models) goes in `Settings`.
+To add a connector:
 
-Services use integrations through the factory:
+1. `app/integrations/{capability}/base_{capability}_client.py`: abstract interface, plain dicts in/out (no SDK types).
+2. `app/integrations/{capability}/{provider}_client.py`: implementation using `get_http_client()`; every provider failure becomes `ExternalServiceError` (502).
+3. A factory in `clients.py`: the only place that knows which provider is active.
+4. Configuration (API keys, base URLs) in `Settings`.
 
 ```python
-from app.integrations.clients import get_llm_client
+# app/integrations/geocoding/nominatim_client.py
+class NominatimClient(BaseGeocodingClient):
+    """Geocoding through OpenStreetMap Nominatim."""
+
+    def __init__(self, http: httpx.AsyncClient, base_url: str):
+        self.http = http
+        self.base_url = base_url
+
+    async def geocode(self, address: str) -> Dict[str, Any]:
+        try:
+            response = await self.http.get(f"{self.base_url}/search", params={"q": address, "format": "json", "limit": 1})
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            raise ExternalServiceError(f"Geocoding failed: {type(e).__name__}") from e
+        results = response.json()
+        return {"lat": float(results[0]["lat"]), "lon": float(results[0]["lon"])} if results else {}
 
 
-class SummaryService:
-    """Business logic for text summaries."""
+# app/integrations/clients.py
+def get_geocoding_client() -> BaseGeocodingClient:
+    return NominatimClient(get_http_client(), base_url=settings.GEOCODING_BASE_URL)
 
-    async def summarize(self, text: str) -> str:
-        result = await get_llm_client().invoke(
-            [{"role": "user", "content": f"Summarize:\n{text}"}]
-        )
-        return result["content"]
+
+# app/services/store_service.py: services only use the factory
+location = await get_geocoding_client().geocode(data.address)
 ```
-
-The available LLM connector is `OpenRouterClient` (OpenAI-compatible API): set `OPENROUTER_API_KEY`, optionally `OPENROUTER_MODEL` (default `openrouter/auto`).
 
 ---
 
@@ -267,6 +287,7 @@ Converts exceptions raised by the endpoint into responses with body `{"error": "
 | `NotFoundError` | 404 |
 | `InvalidInputError` | 400 |
 | `ExternalServiceError` | 502 |
+| `ServiceUnavailableError` | 503 |
 | Any other `AppError` | 400 |
 | `HTTPException` | passed through unchanged |
 | Unexpected exception | 500, generic message; traceback in the log, never in the response |
@@ -279,6 +300,8 @@ To add an error type: subclass `AppError` and add it to `_STATUS_CODES` in `erro
 Records every call in the `audit_logs` collection: `action` (function name), `endpoint` (request path), `method`, `status` (`success`/`error`), `duration_ms`, `timestamp` (UTC), `user_id` (with `@require_auth`), `metadata` (the dict passed to the decorator, plus `error` on failure).
 
 Method and path are read from the request, which the decorator gets through a hidden parameter added to the endpoint signature. A failure while writing the log is logged and never affects the response.
+
+`@audit_log(enabled=False)` keeps the mandatory decorator but records nothing: only for very frequent technical calls such as the health probes.
 
 ### @require_auth
 
@@ -381,8 +404,9 @@ async def request_ingestion(self, document_id: str, user: AuthUser) -> JobRespon
 | Exception | Retry with backoff (5s, 10s, 20s… max 5 min) until `max_attempts`, then `failed` with `error` |
 | Timeout (`timeout_seconds`) | Counted as a failed attempt |
 | Cancel on a pending job | `cancelled` immediately |
-| Cancel on a running job | `cancel_requested`, the handler stops at the next `check_cancelled()` |
-| Worker crash | The job lock (`WORKER_LOCK_SECONDS`) expires, the job goes back to `pending` and resumes from its checkpoint |
+| Cancel on a running job | `cancel_requested`, the handler stops at the next `check_cancelled()`; a failure after the request ends `cancelled`, never retried |
+| Worker crash | The job lock (`WORKER_LOCK_SECONDS`) expires: the job goes back to `pending` and resumes from its checkpoint, or ends `cancelled` if cancellation was requested |
+| Lock lost (worker paused or cut off longer than the lock) | The next lock renewal fails and the handler is stopped: the job belongs to whoever claimed it |
 | Unknown `domain`/`type` | `failed` ("No handler registered") |
 | SIGTERM | No new jobs are claimed; running ones finish (or are recovered after the lock expires) |
 
@@ -402,13 +426,12 @@ Tests never touch a real database or network. [tests/conftest.py](tests/conftest
 | `client` | `httpx.AsyncClient` calling the app in-process: `await client.get("/api/v1/...")` |
 | `auth(user_id, *roles)` | Mock bearer header: `headers=auth("alice", "admin")` |
 | `storage` | `{collection: MemoryStorage}` behind every repository (automatic) |
-| `fake_llm` | `FakeLLMClient` recording calls in `fake_llm.calls` |
 
 ### Endpoint test rules
 
 1. **One file per router**, same path: `app/api/v1/product_router.py` → `tests/api/v1/test_product_router.py`.
 2. **Test through HTTP** with `client`, never by calling services directly. Use repositories only to arrange data the API cannot create (e.g. a job already running).
-3. **No real database, network or LLM**: patch integrations with fakes where the service imports the factory, e.g. `monkeypatch.setattr("app.services.summary_service.get_llm_client", lambda: fake_llm)`.
+3. **No real database or network**: replace connectors with fakes where the service imports the factory, e.g. `monkeypatch.setattr("app.services.store_service.get_geocoding_client", lambda: FakeGeocodingClient())`.
 4. **Every endpoint covers**, when applicable:
    - success: status code and the relevant body fields
    - invalid input: 422
@@ -877,6 +900,14 @@ CORS_ORIGINS='["http://localhost:5173"]'
 
 `"*"` allows any origin but automatically disables credentials (cookies, `Authorization` sent by the browser).
 
+### Retention
+
+`AUDIT_LOG_RETENTION_DAYS` (default 90) and `JOB_RETENTION_DAYS` (default 30, from the job end) control how long audit logs and finished jobs are kept; `0` keeps them forever. See [Indexes and retention](#entity-repositories-apprepositories).
+
+### Health probes
+
+`GET /api/v1/health/live` answers 200 while the process runs (liveness: restart the container if it fails). `GET /api/v1/health/ready` answers 503 when the database is unreachable (readiness: stop sending traffic). Neither is audited.
+
 ## Docker
 
 `docker-compose.yaml` is for development: it mounts the code and runs uvicorn with `--reload`. `base-worker` runs the same image with `python -m app.worker` and does not auto-reload: restart it after changing jobs or services (`docker-compose restart base-worker`). The `Dockerfile` alone builds a self-contained image (code copied, non-root user, no reload).
@@ -915,7 +946,8 @@ docker-compose down [-v]        # stop [and remove volumes]
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/v1/health/check` | API uptime and database reachability |
+| GET | `/api/v1/health/live` | Liveness: 200 while the process runs, with version and uptime |
+| GET | `/api/v1/health/ready` | Readiness: 200 if the database is reachable, 503 otherwise |
 | GET | `/api/v1/audit-logs` | Audit logs in a date range, newest first. Requires role `admin` |
 | GET | `/api/v1/jobs` | Your jobs (all for `admin`), filters `domain`, `type`, `status`, `limit`, `skip` |
 | GET | `/api/v1/jobs/{id}` | Job status, progress, result |

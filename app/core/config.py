@@ -21,15 +21,16 @@ class Settings(BaseSettings):
     WORKER_POLL_SECONDS: float = 2.0     # wait between checks when the queue is empty
     WORKER_LOCK_SECONDS: float = 60.0    # a job whose worker is silent this long is retried
 
+    # Retention in days (0 = keep forever). Changing it requires dropping the TTL index
+    AUDIT_LOG_RETENTION_DAYS: int = 90
+    JOB_RETENTION_DAYS: int = 30         # counted from the job end
+
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"
     MONGO_DB: str = "base_api_db"
 
     # External integrations
     HTTP_TIMEOUT_SECONDS: float = 30.0
-    OPENROUTER_API_KEY: str = ""
-    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    OPENROUTER_MODEL: str = "openrouter/auto"
 
 
 settings = Settings()

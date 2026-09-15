@@ -6,7 +6,7 @@ Modular FastAPI boilerplate for REST APIs, built on a strict layered architectur
 
 - **FastAPI** with full async support and auto-generated Swagger docs
 - **Entity repositories** on top of a database-agnostic storage layer (MongoDB active, PostgreSQL provided as a reference example)
-- **Integrations layer** for external services, with an OpenRouter LLM connector
+- **Integrations layer** for external services: shared HTTP client and a connector pattern
 - **Route decorators** for error handling, audit logging and role-based authentication (pluggable, with mock tokens for local testing)
 - **Background jobs**: a worker process with a database-backed queue, progress, retries, cancellation and crash recovery
 - **Tests**: endpoint tests on in-memory storage (no database needed) and architecture tests that enforce the layer boundaries

@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.db.database import db_connect, db_disconnect
 from app.integrations.clients import integrations_connect, integrations_disconnect
+from app.repositories.entity_repository import ensure_all_indexes
 
 setup_logging(settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     if settings.AUTH_MOCK_ENABLED:
         logger.warning("AUTH_MOCK_ENABLED: mock bearer tokens are accepted, never use it in production")
     await db_connect()
+    await ensure_all_indexes()
     await integrations_connect()
     yield
     await integrations_disconnect()
