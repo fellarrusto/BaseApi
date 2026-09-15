@@ -31,7 +31,7 @@ Run the tests with `pip install -r requirements-dev.txt && pytest`.
 
 ## Documentation
 
-Architecture, conventions, and the step-by-step guide for adding new features are in [CLAUDE.md](CLAUDE.md) — it also serves as the instruction file for AI coding agents.
+Architecture, conventions, and the step-by-step guide for adding new features are in [AGENTS.md](AGENTS.md) — it also serves as the instruction file for AI coding agents (Codex and other agents read it directly, Claude Code through [CLAUDE.md](CLAUDE.md)).
 
 ## License
 

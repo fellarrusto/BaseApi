@@ -33,7 +33,7 @@ class PostgresStorage(BaseStorage):
     Document-style storage on PostgreSQL.
 
     Reference example: NOT wired into the app. To enable it, follow the
-    "Switching to PostgreSQL" section in CLAUDE.md (requires asyncpg).
+    "Switching to PostgreSQL" section in AGENTS.md (requires asyncpg).
 
     Each collection maps to a table `(id TEXT PRIMARY KEY, data JSONB)`,
     created automatically on first use. Numbers are compared numerically,
